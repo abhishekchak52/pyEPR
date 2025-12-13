@@ -343,19 +343,35 @@ class ProjectInfo(object):
                 if len(setup_names) == 0:
                     logger.warning("\tNo design setup detected.")
                     setup = None
-                    if self.design.solution_type == "Eigenmode":
+                    sol_type = self.design.solution_type
+                    if sol_type == "Eigenmode":
                         logger.warning("\tCreating eigenmode default setup.")
                         setup = self.design.create_em_setup()
-                    elif self.design.solution_type == "DrivenModal":
+                    elif sol_type in ("DrivenModal", "HFSS Hybrid Modal Network", "HFSS Modal Network"):
                         logger.warning("\tCreating driven modal default setup.")
                         setup = self.design.create_dm_setup()
-                    elif self.design.solution_type == "DrivenTerminal":
+                    elif sol_type in ("DrivenTerminal", "HFSS Terminal Network"):
                         logger.warning("\tCreating driven terminal default setup.")
                         setup = self.design.create_dt_setup()
-                    elif self.design.solution_type == "Q3D":
+                    elif sol_type == "Q3D":
                         logger.warning("\tCreating Q3D default setup.")
                         setup = self.design.create_q3d_setup()
-                    self.setup_name = setup.name
+                    else:
+                        # Fallback: try driven modal setup for unknown HFSS types
+                        logger.warning(
+                            f"\tUnknown solution type '{sol_type}'. "
+                            f"Attempting to create driven modal default setup."
+                        )
+                        try:
+                            setup = self.design.create_dm_setup()
+                        except Exception as dm_err:
+                            logger.error(f"Failed to create default setup: {dm_err}")
+                    
+                    if setup is not None:
+                        self.setup_name = setup.name
+                    else:
+                        logger.error(f"Could not create setup for solution type: {sol_type}")
+                        self.setup_name = None
                 else:
                     self.setup_name = setup_names[0]
 

@@ -90,42 +90,85 @@ def plot_convergence_maxdf_vs_sol(ax, s, s2, kw={}):
 
 # quick and dirty use
 def _plot_q3d_convergence_main(epr, RES):
-    fig = epr.hfss_report_full_convergence(_display=False)
-
-    ax = fig.axes[0]
+    """
+    Plot alpha and frequency convergence for Q3D LOM analysis.
+    
+    Args:
+        epr: DistributedAnalysis object (not used for Q3D, kept for API compatibility)
+        RES: DataFrame with 'alpha' and 'fQ' columns from LOM analysis
+    """
+    # Create our own figure instead of relying on HFSS convergence report
+    fig, ax = plt.subplots(figsize=(8, 4))
     ax2 = ax.twinx()
-    ax.cla()
-    ax2.cla()
-    RES["alpha"].plot(ax=ax, c="b")
-    (RES["fQ"] * 1000).plot(ax=ax2, c="red")
-    from matplotlib import pyplot as plt
+    
+    # Handle case where RES might have only one row
+    if len(RES) == 0:
+        ax.text(0.5, 0.5, 'No data to plot', ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    # Plot alpha (blue, left axis) and frequency (red, right axis)
+    # Use markers to make single points visible
+    alpha_data = RES["alpha"]
+    freq_data = RES["fQ"] * 1000  # Convert to MHz
+    
+    alpha_data.plot(ax=ax, c="b", marker='o', ms=6, label='Alpha')
+    freq_data.plot(ax=ax2, c="red", marker='s', ms=6, label='Frequency')
 
     _style_plot_convergence(ax, "Alpha (blue),  Freq (red) [MHz]", y_title=True)
     ax2.set_ylabel("Frequency (MHz)", color="r")
-    ax.set_ylabel("Alpha(MHz)", color="b")
+    ax.set_ylabel("Alpha (MHz)", color="b")
     ax2.spines["right"].set_color("r")
     ax2.tick_params(axis="y", labelcolor="r")
     ax.tick_params(axis="y", labelcolor="b")
-    # legend_translucent(ax)
-    # legend_translucent(ax2)
     ax.set_xlabel("Pass")
+    
+    # For single point, set reasonable axis limits
+    if len(RES) == 1:
+        ax.set_xlim(0.5, 1.5)
+        ax2.set_xlim(0.5, 1.5)
+    
     fig.tight_layout()
-
     return fig
 
 
 def _plot_q3d_convergence_chi_f(RES):
-    df_chi = pd.DataFrame(RES["chi_in_MHz"].values.tolist())
+    """
+    Plot chi and g convergence for Q3D LOM analysis.
+    
+    Args:
+        RES: DataFrame with 'chi_in_MHz' and 'gbus' columns from LOM analysis
+    """
+    # Handle empty DataFrame
+    if len(RES) == 0:
+        fig, axs = plt.subplots(1, 2, figsize=(9, 3.5))
+        axs[0].text(0.5, 0.5, 'No data to plot', ha='center', va='center', transform=axs[0].transAxes)
+        axs[1].text(0.5, 0.5, 'No data to plot', ha='center', va='center', transform=axs[1].transAxes)
+        return fig
+    
+    # Convert list columns to DataFrames
+    chi_values = RES["chi_in_MHz"].values.tolist()
+    g_values = RES["gbus"].values.tolist()
+    
+    df_chi = pd.DataFrame(chi_values, index=RES.index)
     df_chi.index.name = "Pass"
-    df_g = pd.DataFrame(RES["gbus"].values.tolist())
+    df_g = pd.DataFrame(g_values, index=RES.index)
     df_g.index.name = "Pass"
 
     fig, axs = plt.subplots(1, 2, figsize=(9, 3.5))
-    df_chi.plot(lw=2, ax=axs[0])
-    df_g.plot(lw=2, ax=axs[1])
+    
+    # Use markers to make single points visible
+    df_chi.plot(lw=2, ax=axs[0], marker='o', ms=6)
+    df_g.plot(lw=2, ax=axs[1], marker='o', ms=6)
+    
     _style_plot_convergence(axs[0])
     _style_plot_convergence(axs[1])
     axs[0].set_title(r"$\chi$ convergence (MHz)")
     axs[1].set_title(r"$g$ convergence (MHz)")
-
+    
+    # For single point, set reasonable axis limits
+    if len(RES) == 1:
+        axs[0].set_xlim(0.5, 1.5)
+        axs[1].set_xlim(0.5, 1.5)
+    
+    fig.tight_layout()
     return fig

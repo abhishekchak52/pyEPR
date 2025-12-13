@@ -5,6 +5,11 @@ pyEPR.ansys
 Purpose:
     Handles Ansys interaction and control from version 2014 onward.
     Tested most extensively with V2016 and V2019R3.
+    
+    Updated to support pyaedt backend for cross-platform compatibility (Linux/Mac/Windows).
+    The module automatically selects the appropriate backend:
+    - pyaedt (gRPC-based): Works on all platforms, preferred backend
+    - win32com (COM-based): Windows-only fallback for legacy support
 
 @authors:
     Originally contributed by Phil Reinhold.
@@ -36,27 +41,124 @@ import io
 
 from . import logger
 
-# Handle a  few usually troublesome to import packages, which the use may not have
-# installed yet
+##############################################################################
+# Backend Selection and Initialization
+##############################################################################
+
+# Determine available backends
+_PYAEDT_AVAILABLE = False
+_COM_AVAILABLE = False
+_BACKEND = None  # Will be set to 'pyaedt' or 'com'
+
+# Try to import pyaedt (cross-platform, preferred)
+try:
+    from ansys.aedt.core import Desktop as PyAEDTDesktop
+    from ansys.aedt.core import Hfss as PyAEDTHfss
+    from ansys.aedt.core import Q3d as PyAEDTQ3d
+    _PYAEDT_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    PyAEDTDesktop = None
+    PyAEDTHfss = None
+    PyAEDTQ3d = None
+
+# Try to import COM packages (Windows only)
 try:
     import pythoncom
-except (ImportError, ModuleNotFoundError):
-    pass  # raise NameError ("pythoncom module not installed. Please install.")
-
-try:
-    # TODO: Replace `win32com` with Linux compatible package.
-    # See Ansys python files in IronPython internal.
     from win32com.client import Dispatch, CDispatch
+    _COM_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
-    pass  # raise NameError ("win32com module not installed. Please install.")
+    pythoncom = None
+    Dispatch = None
+    CDispatch = None
 
+# Try to import pint for unit handling
 try:
     from pint import UnitRegistry
-
     ureg = UnitRegistry()
     Q = ureg.Quantity
 except (ImportError, ModuleNotFoundError):
-    pass  # raise NameError ("Pint module not installed. Please install.")
+    ureg = None
+    Q = None
+
+
+def get_available_backends():
+    """Return list of available backends."""
+    backends = []
+    if _PYAEDT_AVAILABLE:
+        backends.append('pyaedt')
+    if _COM_AVAILABLE:
+        backends.append('com')
+    return backends
+
+
+def get_backend():
+    """Get the currently active backend."""
+    global _BACKEND
+    return _BACKEND
+
+
+def set_backend(backend: str):
+    """
+    Set the backend to use for Ansys communication.
+    
+    Args:
+        backend (str): Either 'pyaedt' or 'com'
+        
+    Raises:
+        ValueError: If the requested backend is not available
+    """
+    global _BACKEND
+    backend = backend.lower()
+    
+    if backend == 'pyaedt':
+        if not _PYAEDT_AVAILABLE:
+            raise ValueError(
+                "pyaedt backend requested but not available. "
+                "Install with: pip install pyaedt"
+            )
+        _BACKEND = 'pyaedt'
+    elif backend == 'com':
+        if not _COM_AVAILABLE:
+            raise ValueError(
+                "COM backend requested but not available. "
+                "This backend is only available on Windows with win32com installed."
+            )
+        _BACKEND = 'com'
+    else:
+        raise ValueError(f"Unknown backend: {backend}. Use 'pyaedt' or 'com'.")
+    
+    logger.info(f"Ansys backend set to: {_BACKEND}")
+
+
+def _auto_select_backend():
+    """Automatically select the best available backend."""
+    global _BACKEND
+    
+    # Prefer pyaedt as it's cross-platform
+    if _PYAEDT_AVAILABLE:
+        _BACKEND = 'pyaedt'
+    elif _COM_AVAILABLE:
+        _BACKEND = 'com'
+    else:
+        _BACKEND = None
+        logger.warning(
+            "No Ansys backend available! Install pyaedt (pip install pyaedt) "
+            "or win32com (Windows only) to enable Ansys connectivity."
+        )
+
+
+# Auto-select backend on module load
+_auto_select_backend()
+
+
+def using_pyaedt():
+    """Check if pyaedt backend is active."""
+    return _BACKEND == 'pyaedt'
+
+
+def using_com():
+    """Check if COM backend is active."""
+    return _BACKEND == 'com'
 
 
 ##############################################################################
@@ -239,6 +341,54 @@ def var(x):
 
 
 _release_fns = []
+_pyaedt_sessions = []  # Track pyaedt sessions for cleanup
+
+
+def _unwrap_aedt_handle(obj, attr_name: str):
+    """
+    Best-effort unwrap for PyAEDT HIGH-LEVEL wrapper objects.
+
+    PyAEDT high-level objects (Desktop, Hfss, Q3d) expose COM handles via attributes 
+    like 'odesktop', 'oproject', 'odesign'. In different versions, these may be 
+    attributes or callables.
+    
+    Low-level AedtObjWrapper objects (returned from COM method calls like NewProject()) 
+    are already COM proxies and should NOT be unwrapped further.
+    
+    Returns None if unwrapping is not applicable (e.g., obj is already a COM wrapper).
+    """
+    if obj is None:
+        return None
+    
+    # Check if this is a high-level PyAEDT object that needs unwrapping
+    # High-level: Desktop, Hfss, Q3d, etc.
+    # Low-level: AedtObjWrapper (from COM calls) - already COM proxies, return None
+    obj_type_name = type(obj).__name__
+    
+    # Only unwrap if this looks like a high-level PyAEDT class
+    is_high_level_pyaedt = obj_type_name in [
+        'Desktop', 'Hfss', 'Q3d', 'Q2d', 'Icepak', 
+        'Maxwell2d', 'Maxwell3d', 'Mechanical', 
+        'Rmxprt', 'Circuit', 'Emit', 'TwinBuilder'
+    ]
+    
+    if not is_high_level_pyaedt:
+        # Not a high-level object, don't try to unwrap
+        # (it's probably already a COM wrapper like AedtObjWrapper)
+        return None
+    
+    if not hasattr(obj, attr_name):
+        return None
+        
+    val = getattr(obj, attr_name)
+    if callable(val):
+        try:
+            return val()
+        except (TypeError, Exception) as e:
+            # Some wrappers present a callable signature that needs args, or call fails
+            logger.debug(f"Could not call {attr_name}() on {obj_type_name}: {e}")
+            return None
+    return val
 
 
 def _add_release_fn(fn):
@@ -251,29 +401,76 @@ def _add_release_fn(fn):
 
 def release():
     """
-    Release COM connection to Ansys.
+    Release connection to Ansys (works with both COM and pyaedt backends).
     """
-    global _release_fns
+    global _release_fns, _pyaedt_sessions
+    
     for fn in _release_fns:
-        fn()
+        try:
+            fn()
+        except Exception as e:
+            logger.debug(f"Error during release: {e}")
+    
     time.sleep(0.1)
-
-    # Note that _GetInterfaceCount is a member
-    refcount = pythoncom._GetInterfaceCount()  # pylint: disable=no-member
-
-    if refcount > 0:
-        print("Warning! %d COM references still alive" % (refcount))
-        print("Ansys will likely refuse to shut down")
+    
+    if using_com() and pythoncom is not None:
+        # Note that _GetInterfaceCount is a member
+        try:
+            refcount = pythoncom._GetInterfaceCount()  # pylint: disable=no-member
+            if refcount > 0:
+                print("Warning! %d COM references still alive" % (refcount))
+                print("Ansys will likely refuse to shut down")
+        except Exception:
+            pass
+    
+    # Clean up pyaedt sessions
+    for session in _pyaedt_sessions:
+        try:
+            if hasattr(session, 'release_desktop'):
+                session.release_desktop()
+        except Exception as e:
+            logger.debug(f"Error releasing pyaedt session: {e}")
+    _pyaedt_sessions.clear()
 
 
 class COMWrapper(object):
+    """
+    Base class for wrapping Ansys objects.
+    Works with both COM (win32com) and pyaedt backends.
+    """
     def __init__(self):
         _add_release_fn(self.release)
 
     def release(self):
-        for k, v in self.__dict__.items():
-            if isinstance(v, CDispatch):
-                setattr(self, k, None)
+        """Release resources held by this wrapper."""
+        for k, v in list(self.__dict__.items()):  # Use list() to avoid modification during iteration
+            # Skip properties - they don't have setters and can't be set to None
+            # Check if this attribute is defined as a property in the class
+            attr = getattr(type(self), k, None)
+            if isinstance(attr, property):
+                # Properties can't be set, skip them
+                continue
+            
+            try:
+                # Handle COM objects
+                if _COM_AVAILABLE and CDispatch is not None and isinstance(v, CDispatch):
+                    setattr(self, k, None)
+                # Handle pyaedt objects - they have their own cleanup
+                elif hasattr(v, 'release_desktop'):
+                    try:
+                        v.release_desktop()
+                    except Exception:
+                        pass
+                    # Try to set to None, but catch errors if it's read-only
+                    try:
+                        setattr(self, k, None)
+                    except (AttributeError, TypeError):
+                        # Attribute is read-only or a property, skip setting it
+                        pass
+            except (AttributeError, TypeError) as e:
+                # Skip if we can't set the attribute (e.g., it's a property or read-only)
+                logger.debug(f"Could not release attribute {k}: {e}")
+                continue
 
 
 class HfssPropertyObject(COMWrapper):
@@ -365,54 +562,183 @@ def set_property(prop_holder, prop_tab, prop_server, name, value, prop_args=None
 
 
 class HfssApp(COMWrapper):
-    def __init__(self, ProgID="AnsoftHfss.HfssScriptInterface"):
+    def __init__(self, ProgID="AnsoftHfss.HfssScriptInterface", 
+                 version=None, non_graphical=False, new_desktop_session=False):
         """
-        Connect to IDispatch-based COM object.
-            Parameter is the ProgID or CLSID of the COM object.
-            This is found in the regkey.
-
-        Version changes for Ansys HFSS for the main object
-            v2016 - 'Ansoft.ElectronicsDesktop'
-            v2017 and subsequent - 'AnsoftHfss.HfssScriptInterface'
-
+        Connect to Ansys AEDT application.
+        
+        Supports two backends:
+        - pyaedt (cross-platform, uses gRPC) - preferred
+        - COM/win32com (Windows only) - legacy support
+        
+        Args:
+            ProgID (str): COM ProgID (only used for COM backend).
+                v2016 - 'Ansoft.ElectronicsDesktop'
+                v2017 and subsequent - 'AnsoftHfss.HfssScriptInterface'
+            version (str): Ansys version string e.g., "2024.1" (pyaedt backend).
+                If None, connects to the latest installed version.
+            non_graphical (bool): Run in non-graphical mode (pyaedt backend).
+            new_desktop_session (bool): Start a new desktop session (pyaedt backend).
         """
         super(HfssApp, self).__init__()
-        self._app = Dispatch(ProgID)
+        
+        self._backend = _BACKEND
+        self._pyaedt_desktop = None
+        self._app = None
+        
+        if using_pyaedt():
+            # Use pyaedt backend (cross-platform)
+            self._pyaedt_desktop = PyAEDTDesktop(
+                specified_version=version,
+                non_graphical=non_graphical,
+                new_desktop_session=new_desktop_session
+            )
+            _pyaedt_sessions.append(self._pyaedt_desktop)
+            # Get the underlying oDesktop object for compatibility
+            self._app = self._pyaedt_desktop
+            logger.info("Connected to Ansys via pyaedt backend")
+        elif using_com():
+            # Use COM backend (Windows only)
+            self._app = Dispatch(ProgID)
+            logger.info("Connected to Ansys via COM backend")
+        else:
+            raise RuntimeError(
+                "No Ansys backend available. Install pyaedt (pip install pyaedt) "
+                "or win32com (Windows only)."
+            )
 
     def get_app_desktop(self):
-        return HfssDesktop(self, self._app.GetAppDesktop())
-        # in v2016, there is also getApp - which can be called with HFSS
+        """Get the desktop object."""
+        if using_pyaedt():
+            return HfssDesktop(self, self._pyaedt_desktop)
+        else:
+            return HfssDesktop(self, self._app.GetAppDesktop())
+
+    def release(self):
+        """Release the connection."""
+        super().release()
+        if self._pyaedt_desktop is not None:
+            try:
+                self._pyaedt_desktop.release_desktop()
+            except Exception:
+                pass
+            self._pyaedt_desktop = None
 
 
 class HfssDesktop(COMWrapper):
     def __init__(self, app, desktop):
         """
         :type app: HfssApp
-        :type desktop: Dispatch
+        :type desktop: Dispatch or PyAEDTDesktop
         """
         super(HfssDesktop, self).__init__()
         self.parent = app
-        self._desktop = desktop
+        # Store the original desktop object (pyaedt Desktop or COM object)
+        self._desktop_original = desktop
+        self._backend = _BACKEND
 
         # ansys version, needed to check for command changes,
         # since some commands have changed over the years
         self.version = self.get_version()
 
+    def __bool__(self):
+        """Return True if the desktop has a valid underlying COM object."""
+        try:
+            odesktop = self._get_odesktop()
+            return odesktop is not None
+        except Exception:
+            return False
+
+    def _get_odesktop(self):
+        """Get the underlying oDesktop COM object (for both backends)."""
+        # Handle both new (with _desktop_original) and old (with _desktop) object structures
+        # Check __dict__ directly to avoid property recursion
+        desktop_obj = None
+        
+        if '_desktop_original' in self.__dict__:
+            desktop_obj = self.__dict__['_desktop_original']
+        elif '_desktop' in self.__dict__:
+            # Fallback for objects created before the change (old structure)
+            desktop_obj = self.__dict__['_desktop']
+        else:
+            # Last resort: try to get from parent app
+            try:
+                if hasattr(self, 'parent') and hasattr(self.parent, '_pyaedt_desktop'):
+                    desktop_obj = self.parent._pyaedt_desktop
+                elif hasattr(self, 'parent') and hasattr(self.parent, '_app'):
+                    # For COM backend, try to get desktop from app
+                    if hasattr(self.parent._app, 'GetAppDesktop'):
+                        desktop_obj = self.parent._app.GetAppDesktop()
+            except Exception:
+                pass
+            
+            if desktop_obj is None:
+                raise AttributeError(
+                    "HfssDesktop object is missing desktop reference. "
+                    "Expected '_desktop_original' or '_desktop' attribute. "
+                    f"Object dict keys: {list(self.__dict__.keys())}"
+                )
+        
+        if using_pyaedt():
+            # pyaedt Desktop object has odesktop attribute
+            odesk = _unwrap_aedt_handle(desktop_obj, "odesktop")
+            if odesk is not None:
+                return odesk
+            # If it's already a COM object, return it
+            return desktop_obj
+        # COM backend - desktop_obj is already the COM object
+        return desktop_obj
+
+    @property
+    def odesktop(self):
+        """
+        Property to access the underlying oDesktop COM object.
+        This is provided for external code that needs direct COM access.
+        Use this instead of accessing _desktop directly when you need COM methods.
+        """
+        return self._get_odesktop()
+
+    @property
+    def _desktop(self):
+        """
+        Property that returns the COM oDesktop object for backward compatibility.
+        External code accessing _desktop will get the COM object, which works
+        for both backends (pyaedt Desktop.odesktop or direct COM object).
+        """
+        return self._get_odesktop()
+
     def close_all_windows(self):
-        self._desktop.CloseAllWindows()
+        self._get_odesktop().CloseAllWindows()
 
     def project_count(self):
-        count = len(self._desktop.GetProjects())
-        return count
+        projs = self._get_odesktop().GetProjects()
+        if projs is None:
+            return 0
+        return len(list(projs))
 
     def get_active_project(self):
-        return HfssProject(self, self._desktop.GetActiveProject())
+        oproject = self._get_odesktop().GetActiveProject()
+        # Check __dict__ directly to avoid property recursion
+        desktop_obj = (self.__dict__.get('_desktop_original') or 
+                      self.__dict__.get('_desktop'))
+        pyaedt_desktop = desktop_obj if using_pyaedt() and desktop_obj and hasattr(desktop_obj, 'odesktop') else None
+        return HfssProject(self, oproject, pyaedt_desktop=pyaedt_desktop)
 
     def get_projects(self):
-        return [HfssProject(self, p) for p in self._desktop.GetProjects()]
+        # Check __dict__ directly to avoid property recursion
+        desktop_obj = (self.__dict__.get('_desktop_original') or 
+                      self.__dict__.get('_desktop'))
+        pyaedt_desktop = desktop_obj if using_pyaedt() and desktop_obj and hasattr(desktop_obj, 'odesktop') else None
+        projs = self._get_odesktop().GetProjects()
+        if projs is None:
+            return []
+        return [HfssProject(self, p, pyaedt_desktop=pyaedt_desktop) for p in list(projs)]
 
     def get_project_names(self):
-        return self._desktop.GetProjectList()
+        names = self._get_odesktop().GetProjectList()
+        if names is None:
+            return []
+        return list(names)
 
     def get_messages(self, project_name="", design_name="", level=0):
         """Use:  Collects the messages from a specified project and design.
@@ -440,81 +766,149 @@ class HfssDesktop(COMWrapper):
                 2 is error and fatal
                 3 is fatal only (rarely used)
         """
-        return self._desktop.GetMessages(project_name, design_name, level)
+        return self._get_odesktop().GetMessages(project_name, design_name, level)
 
     def get_version(self):
-        return self._desktop.GetVersion()
+        if using_pyaedt():
+            # Check __dict__ directly to avoid property recursion
+            desktop_obj = (self.__dict__.get('_desktop_original') or 
+                          self.__dict__.get('_desktop'))
+            if desktop_obj and hasattr(desktop_obj, 'aedt_version_id'):
+                return desktop_obj.aedt_version_id
+        return self._get_odesktop().GetVersion()
 
     def new_project(self):
-        return HfssProject(self, self._desktop.NewProject())
+        oproject = self._get_odesktop().NewProject()
+        # Check __dict__ directly to avoid property recursion
+        desktop_obj = (self.__dict__.get('_desktop_original') or 
+                      self.__dict__.get('_desktop'))
+        pyaedt_desktop = desktop_obj if using_pyaedt() and desktop_obj and hasattr(desktop_obj, 'odesktop') else None
+        return HfssProject(self, oproject, pyaedt_desktop=pyaedt_desktop)
 
     def open_project(self, path):
         """returns error if already open"""
-        return HfssProject(self, self._desktop.OpenProject(path))
+        oproject = self._get_odesktop().OpenProject(str(path))
+        # Check __dict__ directly to avoid property recursion
+        desktop_obj = (self.__dict__.get('_desktop_original') or 
+                      self.__dict__.get('_desktop'))
+        pyaedt_desktop = desktop_obj if using_pyaedt() and desktop_obj and hasattr(desktop_obj, 'odesktop') else None
+        return HfssProject(self, oproject, pyaedt_desktop=pyaedt_desktop)
 
     def set_active_project(self, name):
-        self._desktop.SetActiveProject(name)
+        self._get_odesktop().SetActiveProject(name)
 
     @property
     def project_directory(self):
-        return self._desktop.GetProjectDirectory()
+        return self._get_odesktop().GetProjectDirectory()
 
     @project_directory.setter
     def project_directory(self, path):
-        self._desktop.SetProjectDirectory(path)
+        self._get_odesktop().SetProjectDirectory(str(path))
 
     @property
     def library_directory(self):
-        return self._desktop.GetLibraryDirectory()
+        return self._get_odesktop().GetLibraryDirectory()
 
     @library_directory.setter
     def library_directory(self, path):
-        self._desktop.SetLibraryDirectory(path)
+        self._get_odesktop().SetLibraryDirectory(str(path))
 
     @property
     def temp_directory(self):
-        return self._desktop.GetTempDirectory()
+        return self._get_odesktop().GetTempDirectory()
 
     @temp_directory.setter
     def temp_directory(self, path):
-        self._desktop.SetTempDirectory(path)
+        self._get_odesktop().SetTempDirectory(str(path))
 
 
 class HfssProject(COMWrapper):
-    def __init__(self, desktop, project):
+    def __init__(self, desktop, project, pyaedt_desktop=None):
         """
         :type desktop: HfssDesktop
-        :type project: Dispatch
+        :type project: Dispatch or pyaedt oProject
+        :type pyaedt_desktop: PyAEDTDesktop (optional, for pyaedt backend)
         """
         super(HfssProject, self).__init__()
         self.parent = desktop
-        self._project = project
-        # self.name = project.GetName()
+        self._pyaedt_desktop = pyaedt_desktop
+        self._backend = _BACKEND
+        
+        # Ensure we store the actual COM object, not a pyaedt wrapper.
+        # PyAEDT may expose handles as attributes or callables; normalize both.
+        if using_pyaedt() and project is not None:
+            oproj = _unwrap_aedt_handle(project, "oproject")
+            self._project = oproj if oproj is not None else project
+        else:
+            self._project = project
+        
+        # self.name = self._project.GetName() if self._project else None
         self._ansys_version = self.parent.version
 
+    def __bool__(self):
+        """Return True if the project has a valid underlying COM object."""
+        return self._project is not None
+
     def close(self):
-        self._project.Close()
+        if self._project is not None:
+            self._project.Close()
 
     def make_active(self):
-        self.parent.set_active_project(self.name)
+        if self.name:
+            self.parent.set_active_project(self.name)
 
     def get_designs(self):
-        return [HfssDesign(self, d) for d in self._project.GetDesigns()]
+        return [
+            HfssDesign(self, d, pyaedt_desktop=self._pyaedt_desktop)
+            for d in self._get_designs_list()
+        ]
 
     def get_design_names(self):
-        return [d.GetName() for d in self._project.GetDesigns()]
+        return [d.GetName() for d in self._get_designs_list()]
+
+    def _get_designs_list(self):
+        """
+        Return a Python list of design COM objects.
+
+        COM scripting typically returns an empty sequence when no designs exist.
+        Some backends (notably gRPC wrappers) can return None instead; normalize
+        that to [] to preserve the original COM-based behavior.
+        """
+        oproject = self._get_oproject()
+        if oproject is None:
+            return []
+        try:
+            designs = oproject.GetDesigns()
+        except Exception:
+            designs = None
+        if designs is None:
+            return []
+        # Defensive: ensure it's a real Python list even if AEDT returns a tuple/array-like.
+        try:
+            return list(designs)
+        except TypeError:
+            return [designs]
 
     def save(self, path=None):
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
         if path is None:
-            self._project.Save()
+            oproject.Save()
         else:
-            self._project.SaveAs(path, True)
+            oproject.SaveAs(str(path), True)
 
     def simulate_all(self):
-        self._project.SimulateAll()
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        oproject.SimulateAll()
 
     def import_dataset(self, path):
-        self._project.ImportDataset(path)
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        oproject.ImportDataset(str(path))
 
     def rename_design(self, design, rename):
         if design in self.get_designs():
@@ -527,20 +921,38 @@ class HfssProject(COMWrapper):
         return src_design.duplicate(name=target)
 
     def get_variable_names(self):
-        return [VariableString(s) for s in self._project.GetVariables()]
+        oproject = self._get_oproject()
+        if oproject is None:
+            return []
+        vars_ = oproject.GetVariables()
+        if vars_ is None:
+            return []
+        return [VariableString(s) for s in list(vars_)]
 
     def get_variables(self):
         """Returns the project variables only, which start with $. These are global variables."""
+        oproject = self._get_oproject()
+        if oproject is None:
+            return {}
+        vars_ = oproject.GetVariables()
+        if vars_ is None:
+            return {}
         return {
             VariableString(s): self.get_variable_value(s)
-            for s in self._project.GetVariables()
+            for s in list(vars_)
         }
 
     def get_variable_value(self, name):
-        return self._project.GetVariableValue(name)
+        oproject = self._get_oproject()
+        if oproject is None:
+            return None
+        return oproject.GetVariableValue(name)
 
     def create_variable(self, name, value):
-        self._project.ChangeProperty(
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        oproject.ChangeProperty(
             [
                 "NAME:AllTabs",
                 [
@@ -563,10 +975,15 @@ class HfssProject(COMWrapper):
         )
 
     def set_variable(self, name, value):
-        if name not in self._project.GetVariables():
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        existing = oproject.GetVariables()
+        existing = list(existing) if existing is not None else []
+        if name not in existing:
             self.create_variable(name, value)
         else:
-            self._project.SetVariableValue(name, value)
+            oproject.SetVariableValue(name, value)
         return VariableString(name)
 
     def get_path(self):
@@ -579,22 +996,63 @@ class HfssProject(COMWrapper):
             )
 
     def new_design(self, design_name, solution_type, design_type="HFSS"):
-        design_name_int = increment_name(
-            design_name, [d.GetName() for d in self._project.GetDesigns()]
-        )
-        return HfssDesign(
-            self,
-            self._project.InsertDesign(design_type, design_name_int, solution_type, ""),
-        )
+        # Ensure we're using the COM object for InsertDesign
+        oproject = self._get_oproject()
+        existing_names = [d.GetName() for d in self._get_designs_list()]
+        design_name_int = increment_name(design_name, existing_names)
+        odesign = oproject.InsertDesign(design_type, design_name_int, solution_type, "")
+        return HfssDesign(self, odesign, pyaedt_desktop=self._pyaedt_desktop)
+    
+    def _get_oproject(self):
+        """
+        Get the underlying oProject COM object (for COM-specific methods).
+        
+        With pyaedt backend, _project should already be a COM object (extracted at init).
+        With COM backend, _project is already the COM object.
+        
+        Returns None if _project is not available.
+        """
+        if self._project is None:
+            return None
+        
+        # In __init__, we ensure _project is always a COM object, but check just in case
+        if using_pyaedt():
+            # Check if _project is a pyaedt wrapper with oproject attribute (shouldn't happen, but safety check)
+            oproject = _unwrap_aedt_handle(self._project, "oproject")
+            if oproject is not None:
+                # Verify it has expected COM methods
+                if hasattr(oproject, 'InsertDesign') or hasattr(oproject, 'GetDesigns'):
+                    return oproject
+            
+            # _project should already be a COM object from __init__
+            # Verify it has expected methods
+            if hasattr(self._project, 'InsertDesign') or hasattr(self._project, 'GetDesigns'):
+                return self._project
+            
+            raise AttributeError(
+                f"_project is not a valid COM object. "
+                f"Type: {type(self._project)}, "
+                f"Has oproject: {hasattr(self._project, 'oproject')}, "
+                f"Has InsertDesign: {hasattr(self._project, 'InsertDesign')}"
+            )
+        # COM backend - _project is already the COM object
+        return self._project
 
     def get_design(self, name):
-        return HfssDesign(self, self._project.GetDesign(name))
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        return HfssDesign(self, oproject.GetDesign(name), 
+                         pyaedt_desktop=self._pyaedt_desktop)
 
     def get_active_design(self):
-        d = self._project.GetActiveDesign()
+        oproject = self._get_oproject()
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        d = oproject.GetActiveDesign()
         if d is None:
             raise EnvironmentError("No Design Active")
-        return HfssDesign(self, d)
+        return HfssDesign(self, d, pyaedt_desktop=self._pyaedt_desktop)
 
     def new_dm_design(self, name: str):
         """Create a new driven model design
@@ -621,39 +1079,244 @@ class HfssProject(COMWrapper):
 
     @property  # v2016
     def name(self):
+        if self._project is None:
+            return None
         return self._project.GetName()
 
 
+class _ReporterWrapper:
+    """
+    Wrapper for the ReportSetup COM module that handles pyaedt gRPC compatibility.
+    
+    Some methods like ExportToFile don't work via gRPC COM calls, so this wrapper
+    intercepts those and uses PyAEDT's native Python API instead.
+    """
+    
+    def __init__(self, reporter_module, design):
+        """
+        Args:
+            reporter_module: The raw ReportSetup COM module
+            design: The parent HfssDesign object
+        """
+        self._reporter = reporter_module
+        self._design = design
+    
+    def ExportToFile(self, report_name, filepath):
+        """Export a report to file. Uses PyAEDT native API when available."""
+        filepath = os.path.abspath(str(filepath))
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        if using_pyaedt():
+            pyaedt_app = self._design._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's export_report_to_file method
+                    if hasattr(pyaedt_app, 'post') and hasattr(pyaedt_app.post, 'export_report_to_file'):
+                        output_dir = os.path.dirname(filepath)
+                        if not output_dir:
+                            output_dir = os.getcwd()
+                        # Determine file extension
+                        _, ext = os.path.splitext(filepath)
+                        if not ext:
+                            ext = ".csv"
+                        pyaedt_app.post.export_report_to_file(
+                            output_dir=output_dir,
+                            plot_name=report_name,
+                            extension=ext
+                        )
+                        # PyAEDT might save with different filename, try to find/rename it
+                        expected_file = os.path.join(output_dir, f"{report_name}{ext}")
+                        if os.path.exists(expected_file) and os.path.abspath(expected_file) != filepath:
+                            import shutil
+                            shutil.move(expected_file, filepath)
+                        logger.debug(f"Exported report {report_name} to {filepath} via PyAEDT")
+                        return
+                except Exception as e:
+                    logger.debug(f"PyAEDT export_report_to_file failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        try:
+            self._reporter.ExportToFile(report_name, filepath)
+        except Exception as e:
+            logger.error(f"ExportToFile failed for report {report_name}: {e}")
+            raise
+    
+    def __getattr__(self, name):
+        """Forward all other attribute access to the underlying reporter module."""
+        return getattr(self._reporter, name)
+
+
 class HfssDesign(COMWrapper):
-    def __init__(self, project, design):
+    def __init__(self, project, design, pyaedt_desktop=None):
+        """
+        :type project: HfssProject
+        :type design: Dispatch or pyaedt oDesign
+        :type pyaedt_desktop: PyAEDTDesktop (optional, for pyaedt backend)
+        """
         super(HfssDesign, self).__init__()
         self.parent = project
-        self._design = design
-        self.name = design.GetName()
+        self._pyaedt_desktop = pyaedt_desktop
+        self._backend = _BACKEND
+        self._pyaedt_app = None  # Cached PyAEDT high-level app (Hfss/Q3d)
+        
+        # Ensure we store the actual COM object, not a pyaedt wrapper.
+        # PyAEDT may expose handles as attributes or callables; normalize both.
+        if using_pyaedt() and design is not None:
+            odes = _unwrap_aedt_handle(design, "odesign")
+            self._design = odes if odes is not None else design
+        else:
+            self._design = design
+        
+        if self._design is None:
+            self.name = None
+            self.solution_type = None
+            return
+            
+        self.name = self._design.GetName()
         self._ansys_version = self.parent._ansys_version
 
         try:
             # This function does not exist if the design is not HFSS
-            self.solution_type = design.GetSolutionType()
+            self.solution_type = self._design.GetSolutionType()
         except Exception as e:
             logger.debug(
                 f"Exception occurred at design.GetSolutionType() {e}. Assuming Q3D design"
             )
             self.solution_type = "Q3D"
 
-        if design is None:
-            return
-        self._setup_module = design.GetModule("AnalysisSetup")
-        self._solutions = design.GetModule("Solutions")
-        self._fields_calc = design.GetModule("FieldsReporter")
-        self._output = design.GetModule("OutputVariable")
-        self._boundaries = design.GetModule("BoundarySetup")
-        self._reporter = design.GetModule("ReportSetup")
-        self._modeler = design.SetActiveEditor("3D Modeler")
-        self._optimetrics = design.GetModule("Optimetrics")
-        self._mesh = design.GetModule("MeshSetup")
+        self._setup_module = self._design.GetModule("AnalysisSetup")
+        self._solutions = self._design.GetModule("Solutions")
+        self._fields_calc = self._design.GetModule("FieldsReporter")
+        self._output = self._design.GetModule("OutputVariable")
+        self._boundaries = self._design.GetModule("BoundarySetup")
+        self._reporter_raw = self._design.GetModule("ReportSetup")
+        # Wrap reporter to handle pyaedt gRPC compatibility
+        self._reporter = _ReporterWrapper(self._reporter_raw, self)
+        self._modeler = self._design.SetActiveEditor("3D Modeler")
+        self._optimetrics = self._design.GetModule("Optimetrics")
+        self._mesh = self._design.GetModule("MeshSetup")
         self.modeler = HfssModeler(self, self._modeler, self._boundaries, self._mesh)
         self.optimetrics = Optimetrics(self)
+
+    def __bool__(self):
+        """Return True if the design has a valid underlying COM object."""
+        return self._design is not None
+
+    def _get_pyaedt_app(self):
+        """
+        Get or create a PyAEDT high-level application object (Hfss/Q3d).
+        
+        This provides access to PyAEDT's native Python API for operations that
+        don't work via raw gRPC COM calls (like ExportConvergence).
+        
+        Returns:
+            PyAEDT Hfss or Q3d object, or None if not using pyaedt backend
+        """
+        if not using_pyaedt():
+            return None
+        
+        if self._pyaedt_app is not None:
+            return self._pyaedt_app
+        
+        # Create PyAEDT high-level object connected to this project/design
+        try:
+            project_name = self.parent.name
+            design_name = self.name
+            
+            if self.solution_type == "Q3D":
+                self._pyaedt_app = PyAEDTQ3d(
+                    project=project_name,
+                    design=design_name,
+                    new_desktop=False  # Connect to existing desktop
+                )
+            else:
+                # Eigenmode, DrivenModal, DrivenTerminal all use Hfss
+                self._pyaedt_app = PyAEDTHfss(
+                    project=project_name,
+                    design=design_name,
+                    new_desktop=False  # Connect to existing desktop
+                )
+            logger.debug(f"Created PyAEDT app for {project_name}/{design_name}")
+            return self._pyaedt_app
+        except Exception as e:
+            logger.warning(f"Could not create PyAEDT app: {e}")
+            return None
+
+    def _get_odesktop(self):
+        """Get the underlying oDesktop COM object."""
+        project = self.parent
+        desktop = project.parent
+        if using_pyaedt() and hasattr(desktop._desktop, 'odesktop'):
+            return desktop._desktop.odesktop
+        return desktop._desktop
+
+    def _get_odesign(self):
+        """
+        Get the underlying oDesign COM object (for COM-specific methods).
+        
+        With pyaedt backend, _design should already be a COM object (extracted at init).
+        With COM backend, _design is already the COM object.
+        
+        This method provides a fallback in case _design is somehow a pyaedt wrapper.
+        """
+        if self._design is None:
+            raise AttributeError("_design is None")
+        
+        # In __init__, we ensure _design is always a COM object, but check just in case
+        if using_pyaedt():
+            # Check if _design is a pyaedt wrapper with odesign attribute (shouldn't happen, but safety check)
+            odesign = _unwrap_aedt_handle(self._design, "odesign")
+            if odesign is not None:
+                # Verify it has expected COM methods
+                if hasattr(odesign, 'ExportConvergence') or hasattr(odesign, 'Analyze'):
+                    return odesign
+            
+            # _design should already be a COM object from __init__
+            # Verify it has expected methods
+            if hasattr(self._design, 'ExportConvergence') or hasattr(self._design, 'Analyze'):
+                return self._design
+            
+            # Fallback: try to get design from project
+            logger.warning("_design does not appear to be a valid COM object, attempting to retrieve from project")
+            try:
+                oproject = self.parent._project
+                # If project is a pyaedt wrapper, get the COM object
+                if hasattr(oproject, 'oproject'):
+                    oproject = oproject.oproject
+                if hasattr(oproject, 'GetActiveDesign'):
+                    odesign = oproject.GetActiveDesign()
+                    if odesign is not None:
+                        return odesign
+                # Try by name
+                if hasattr(oproject, 'GetDesign') and hasattr(self, 'name'):
+                    odesign = oproject.GetDesign(self.name)
+                    if odesign is not None:
+                        return odesign
+            except Exception as e:
+                logger.error(f"Could not retrieve oDesign from project: {e}")
+            
+            raise AttributeError(
+                f"_design is not a valid COM object. "
+                f"Type: {type(self._design)}, "
+                f"Has odesign: {hasattr(self._design, 'odesign')}, "
+                f"Has ExportConvergence: {hasattr(self._design, 'ExportConvergence')}"
+            )
+        # COM backend - _design is already the COM object
+        return self._design
+
+    def export_report_to_file(self, report_name: str, filepath: str):
+        """
+        Export a report to file. Uses PyAEDT native API when available.
+        
+        This is a wrapper that handles the gRPC compatibility issue where
+        raw COM ExportToFile calls fail via gRPC.
+        
+        Args:
+            report_name: Name of the report in HFSS
+            filepath: Path to save the file
+        """
+        # _reporter is a _ReporterWrapper that handles PyAEDT compatibility
+        self._reporter.ExportToFile(report_name, str(filepath))
 
     def add_message(self, message: str, severity: int = 0):
         """
@@ -662,10 +1325,8 @@ class HfssDesign(COMWrapper):
         Keyword Args:
             severity (int) : 0 = Informational, 1 = Warning, 2 = Error, 3 = Fatal..
         """
-        project = self.parent
-        desktop = project.parent
-        oDesktop = desktop._desktop
-        oDesktop.AddMessage(project.name, self.name, severity, message)
+        oDesktop = self._get_odesktop()
+        oDesktop.AddMessage(self.parent.name, self.name, severity, message)
 
     def save_screenshot(self, path: str = None, show: bool = True):
         if not path:
@@ -700,7 +1361,7 @@ class HfssDesign(COMWrapper):
 
     def rename_design(self, name):
         old_name = self._design.GetName()
-        self._design.RenameDesignInstance(old_name, name)
+        self._get_odesign().RenameDesignInstance(old_name, name)
 
     def copy_to_project(self, project):
         project.make_active()
@@ -731,12 +1392,19 @@ class HfssDesign(COMWrapper):
 
         if self.solution_type == "Eigenmode":
             return HfssEMSetup(self, name)
-        elif self.solution_type == "DrivenModal":
+        elif self.solution_type in ("DrivenModal", "HFSS Hybrid Modal Network", "HFSS Modal Network"):
             return HfssDMSetup(self, name)
-        elif self.solution_type == "DrivenTerminal":
+        elif self.solution_type in ("DrivenTerminal", "HFSS Terminal Network"):
             return HfssDTSetup(self, name)
         elif self.solution_type == "Q3D":
             return AnsysQ3DSetup(self, name)
+        else:
+            # Fallback for unknown HFSS solution types - assume driven modal
+            logger.warning(
+                f"Unknown solution type '{self.solution_type}'. "
+                f"Defaulting to DrivenModal setup."
+            )
+            return HfssDMSetup(self, name)
 
     def create_q3d_setup(
         self,
@@ -923,7 +1591,7 @@ class HfssDesign(COMWrapper):
                         Type: boolean
                         Whether to also delete linked data.
         """
-        self._design.DeleteFullVariation("All", False)
+        self._get_odesign().DeleteFullVariation("All", False)
 
     def get_nominal_variation(self):
         """
@@ -931,7 +1599,7 @@ class HfssDesign(COMWrapper):
         Return Value: Returns a string representing the nominal variation
         Returns string such as "Height='0.06mm' Lj='13.5nH'"
         """
-        return self._design.GetNominalVariation()
+        return self._get_odesign().GetNominalVariation()
 
     def create_variable(self, name, value, postprocessing=False):
         if postprocessing == True:
@@ -1117,7 +1785,7 @@ class HfssDesign(COMWrapper):
         self._fields_calc.CalcStack("Clear")
 
     def clean_up_solutions(self):
-        self._design.DeleteFullVariation("All", True)  # Delete existing solutions
+        self._get_odesign().DeleteFullVariation("All", True)  # Delete existing solutions
 
 
 class HfssSetup(HfssPropertyObject):
@@ -1168,7 +1836,41 @@ class HfssSetup(HfssPropertyObject):
         if name is None:
             name = self.name
         logger.info(f"Analyzing setup {name}")
-        return self.parent._design.Analyze(name)
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's analyze method expects setup name only, not "Setup : Sweep" format
+                    # Parse out the setup name if it includes a sweep reference
+                    setup_name = name.split(" : ")[0] if " : " in name else name
+                    sweep_name = name.split(" : ")[1] if " : " in name else None
+                    
+                    # PyAEDT's analyze method (API varies by version)
+                    if hasattr(pyaedt_app, 'analyze'):
+                        # First analyze the setup
+                        result = pyaedt_app.analyze(setup=setup_name)
+                        
+                        # If there's a sweep, also analyze it specifically
+                        if sweep_name and hasattr(pyaedt_app, 'analyze_setup'):
+                            try:
+                                pyaedt_app.analyze_setup(setup_name, cores=1)
+                            except Exception:
+                                pass  # Already analyzed above
+                        return result
+                except Exception as e:
+                    logger.debug(f"PyAEDT analyze failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        odesign = self.parent._get_odesign()
+        # Verify odesign is an object, not a function/method
+        if callable(odesign) and not hasattr(odesign, 'Analyze'):
+            raise AttributeError(
+                f"_get_odesign() returned a callable object (type: {type(odesign)}) "
+                f"instead of a COM object. This indicates _design is not properly set."
+            )
+        return odesign.Analyze(name)
 
     def solve(self, name=None):
         """
@@ -1194,7 +1896,20 @@ class HfssSetup(HfssPropertyObject):
         """
         if name is None:
             name = self.name
-        return self.parent._design.Solve(name)
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's analyze method works for solve too
+                    if hasattr(pyaedt_app, 'analyze'):
+                        return pyaedt_app.analyze(setup=name)
+                except Exception as e:
+                    logger.debug(f"PyAEDT analyze/solve failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        return self.parent._get_odesign().Solve(name)
 
     def insert_sweep(
         self,
@@ -1213,70 +1928,147 @@ class HfssSetup(HfssPropertyObject):
             )
 
         name = increment_name(name, self.get_sweep_names())
-        params = [
-            "NAME:" + name,
-            "IsEnabled:=",
-            True,
-            "Type:=",
-            type,
-            "SaveFields:=",
-            save_fields,
-            "SaveRadFields:=",
-            False,
-            # "GenerateFieldsForAllFreqs:="
-            "ExtrapToDC:=",
-            False,
-        ]
+        created_name = name
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        sweep_created = False
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # Snapshot sweeps before creation so we can detect auto-renames reliably.
+                    try:
+                        _before = pyaedt_app.setup_sweeps_names.get(self.name, {}).get("Sweeps", [])
+                        before_sweeps = set(_before) if _before else set()
+                    except Exception:
+                        before_sweeps = set()
 
-        # not sure when exactly this changed between 2016 and 2019
-        if self._ansys_version >= "2019":
-            if count:
-                params.extend(
-                    [
-                        "RangeType:=",
-                        "LinearCount",
-                        "RangeStart:=",
-                        f"{start_ghz:f}GHz",
-                        "RangeEnd:=",
-                        f"{stop_ghz:f}GHz",
-                        "RangeCount:=",
-                        count,
-                    ]
-                )
-            if step_ghz:
-                params.extend(
-                    [
-                        "RangeType:=",
-                        "LinearStep",
-                        "RangeStart:=",
-                        f"{start_ghz:f}GHz",
-                        "RangeEnd:=",
-                        f"{stop_ghz:f}GHz",
-                        "RangeStep:=",
-                        step_ghz,
-                    ]
-                )
+                    # Map type names to PyAEDT sweep types
+                    sweep_type_map = {
+                        "Fast": "Fast",
+                        "Interpolating": "Interpolating", 
+                        "Discrete": "Discrete"
+                    }
+                    pyaedt_type = sweep_type_map.get(type, "Fast")
+                    
+                    if count:
+                        # Use create_linear_count_sweep for count-based sweeps
+                        if hasattr(pyaedt_app, 'create_linear_count_sweep'):
+                            sweep = pyaedt_app.create_linear_count_sweep(
+                                setup=self.name,
+                                units="GHz",
+                                start_frequency=start_ghz,
+                                stop_frequency=stop_ghz,
+                                num_of_freq_points=count,
+                                name=name,
+                                sweep_type=pyaedt_type,
+                                save_fields=save_fields
+                            )
+                            if sweep:
+                                sweep_created = True
+                                created_name = getattr(sweep, "name", name) or name
+                                logger.debug(f"PyAEDT created linear count sweep: {created_name}")
+                    elif step_ghz:
+                        # Use create_linear_step_sweep for step-based sweeps
+                        if hasattr(pyaedt_app, 'create_linear_step_sweep'):
+                            sweep = pyaedt_app.create_linear_step_sweep(
+                                setup=self.name,
+                                unit="GHz",
+                                start_frequency=start_ghz,
+                                stop_frequency=stop_ghz,
+                                step_size=step_ghz,
+                                name=name,
+                                sweep_type=pyaedt_type,
+                                save_fields=save_fields
+                            )
+                            if sweep:
+                                sweep_created = True
+                                created_name = getattr(sweep, "name", name) or name
+                                logger.debug(f"PyAEDT created linear step sweep: {created_name}")
 
-            if (count and step_ghz) or ((not count) and (not step_ghz)):
-                logger.error(
-                    "ERROR: you should provide either step_ghz or count \
-                    when inserting an HFSS driven model freq sweep. \
-                    YOu either provided both or neither! See insert_sweep."
-                )
-        else:
-            params.extend(
-                ["StartValue:=", "%fGHz" % start_ghz, "StopValue:=", "%fGHz" % stop_ghz]
-            )
-            if step_ghz is not None:
-                params.extend(
-                    ["SetupType:=", "LinearSetup", "StepSize:=", "%fGHz" % step_ghz]
-                )
+                    # If PyAEDT auto-renamed the sweep (e.g. Sweep -> Sweep_XXXXX), detect it.
+                    if sweep_created and created_name == name and before_sweeps:
+                        try:
+                            _after = pyaedt_app.setup_sweeps_names.get(self.name, {}).get("Sweeps", [])
+                            after_sweeps = set(_after) if _after else set()
+                            new_sweeps = list(after_sweeps - before_sweeps)
+                            if new_sweeps:
+                                # Deterministic: prefer the most recently added style with same prefix.
+                                # If only one, use it.
+                                new_sweeps.sort()
+                                created_name = new_sweeps[-1]
+                                logger.debug(f"Detected PyAEDT sweep auto-rename to: {created_name}")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"PyAEDT sweep creation failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        if not sweep_created:
+            params = [
+                "NAME:" + name,
+                "IsEnabled:=",
+                True,
+                "Type:=",
+                type,
+                "SaveFields:=",
+                save_fields,
+                "SaveRadFields:=",
+                False,
+                # "GenerateFieldsForAllFreqs:="
+                "ExtrapToDC:=",
+                False,
+            ]
+
+            # not sure when exactly this changed between 2016 and 2019
+            if self._ansys_version >= "2019":
+                if count:
+                    params.extend(
+                        [
+                            "RangeType:=",
+                            "LinearCount",
+                            "RangeStart:=",
+                            f"{start_ghz:f}GHz",
+                            "RangeEnd:=",
+                            f"{stop_ghz:f}GHz",
+                            "RangeCount:=",
+                            count,
+                        ]
+                    )
+                if step_ghz:
+                    params.extend(
+                        [
+                            "RangeType:=",
+                            "LinearStep",
+                            "RangeStart:=",
+                            f"{start_ghz:f}GHz",
+                            "RangeEnd:=",
+                            f"{stop_ghz:f}GHz",
+                            "RangeStep:=",
+                            step_ghz,
+                        ]
+                    )
+
+                if (count and step_ghz) or ((not count) and (not step_ghz)):
+                    logger.error(
+                        "ERROR: you should provide either step_ghz or count \
+                        when inserting an HFSS driven model freq sweep. \
+                        YOu either provided both or neither! See insert_sweep."
+                    )
             else:
-                params.extend(["SetupType:=", "LinearCount", "Count:=", count])
+                params.extend(
+                    ["StartValue:=", "%fGHz" % start_ghz, "StopValue:=", "%fGHz" % stop_ghz]
+                )
+                if step_ghz is not None:
+                    params.extend(
+                        ["SetupType:=", "LinearSetup", "StepSize:=", "%fGHz" % step_ghz]
+                    )
+                else:
+                    params.extend(["SetupType:=", "LinearCount", "Count:=", count])
 
-        self._setup_module.InsertFrequencySweep(self.name, params)
+            self._setup_module.InsertFrequencySweep(self.name, params)
 
-        return HfssFrequencySweep(self, name)
+        return HfssFrequencySweep(self, created_name)
 
     def delete_sweep(self, name):
         self._setup_module.DeleteSweep(self.name, name)
@@ -1318,7 +2110,7 @@ class HfssSetup(HfssPropertyObject):
         elif name not in sweeps:
             raise EnvironmentError("Sweep {} not found in {}".format(name, sweeps))
         return HfssFrequencySweep(self, name)
-
+    
     def add_fields_convergence_expr(self, expr, pct_delta, phase=0):
         """note: because of hfss idiocy, you must call "commit_convergence_exprs"
         after adding all exprs"""
@@ -1364,13 +2156,49 @@ class HfssSetup(HfssPropertyObject):
         # Write file
         temp = tempfile.NamedTemporaryFile()
         temp.close()
-        temp = temp.name + ".conv"
-        self.parent._design.ExportConvergence(
-            self.name, variation, *pre_fn_args, temp, overwrite
-        )
+        temp_path = temp.name + ".conv"
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        export_success = False
+        actual_path = temp_path  # Track actual output file path
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's export_convergence method (API varies by version)
+                    if hasattr(pyaedt_app, 'export_convergence'):
+                        pyaedt_app.export_convergence(
+                            setup=self.name,
+                            variations=variation if variation else "",
+                            output_file=temp_path
+                        )
+                        export_success = True
+                        # PyAEDT may add suffix based on problem type (e.g., "CG" for Q3D)
+                        # Check for files with common suffixes
+                        if not Path(temp_path).is_file():
+                            base_path = temp_path.rsplit('.', 1)[0]
+                            for suffix in ['CG', 'RL', 'DCRL']:
+                                alt_path = f"{base_path}{suffix}.conv"
+                                if Path(alt_path).is_file():
+                                    actual_path = alt_path
+                                    logger.debug(f"PyAEDT exported convergence to {actual_path}")
+                                    break
+                except Exception as e:
+                    logger.debug(f"PyAEDT export_convergence failed: {e}, falling back to COM")
+        
+        # Fall back to COM method if PyAEDT didn't work
+        if not export_success:
+            try:
+                self.parent._get_odesign().ExportConvergence(
+                    self.name, variation, *pre_fn_args, temp_path, overwrite
+                )
+                actual_path = temp_path
+            except Exception as e:
+                logger.error(f"ExportConvergence failed: {e}")
+                return None, ""
 
         # Read File
-        temp = Path(temp)
+        temp = Path(actual_path)
         if not temp.is_file():
             logger.error(
                 f"""ERROR!  Error in trying to read temporary convergence file.
@@ -1403,14 +2231,38 @@ class HfssSetup(HfssPropertyObject):
         """
         temp = tempfile.NamedTemporaryFile()
         temp.close()
-        # print(temp.name0
-        # seems broken in 2016 because of extra text added to the top of the file
-        self.parent._design.ExportMeshStats(
-            self.name, variation, temp.name + ".mesh", True
-        )
+        mesh_file = temp.name + ".mesh"
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        export_success = False
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's export_mesh_stats method (API varies by version)
+                    if hasattr(pyaedt_app, 'export_mesh_stats'):
+                        pyaedt_app.export_mesh_stats(
+                            setup=self.name,
+                            variations=variation if variation else "",
+                            output_file=mesh_file
+                        )
+                        export_success = True
+                except Exception as e:
+                    logger.debug(f"PyAEDT export_mesh_stats failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        if not export_success:
+            try:
+                self.parent._get_odesign().ExportMeshStats(
+                    self.name, variation, mesh_file, True
+                )
+            except Exception as e:
+                logger.error(f"ExportMeshStats failed: {e}")
+                return None
+        
         try:
             df = pd.read_csv(
-                temp.name + ".mesh",
+                mesh_file,
                 delimiter="|",
                 skipinitialspace=True,
                 skiprows=7,
@@ -1434,16 +2286,45 @@ class HfssSetup(HfssPropertyObject):
 
     def get_profile(self, variation=""):
         fn = tempfile.mktemp()
-        self.parent._design.ExportProfile(self.name, variation, fn, False)
-        df = pd.read_csv(
-            fn,
-            delimiter="\t",
-            skipinitialspace=True,
-            skiprows=6,
-            skipfooter=1,
-            skip_blank_lines=True,
-            engine="python",
-        )
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        export_success = False
+        if using_pyaedt():
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's export_profile method (API varies by version)
+                    if hasattr(pyaedt_app, 'export_profile'):
+                        pyaedt_app.export_profile(
+                            setup=self.name,
+                            variations=variation if variation else "",
+                            output_file=fn
+                        )
+                        export_success = True
+                except Exception as e:
+                    logger.debug(f"PyAEDT export_profile failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        if not export_success:
+            try:
+                self.parent._get_odesign().ExportProfile(self.name, variation, fn, False)
+            except Exception as e:
+                logger.error(f"ExportProfile failed: {e}")
+                return None
+        
+        try:
+            df = pd.read_csv(
+                fn,
+                delimiter="\t",
+                skipinitialspace=True,
+                skiprows=6,
+                skipfooter=1,
+                skip_blank_lines=True,
+                engine="python",
+            )
+        except Exception as e:
+            logger.error(f"Error reading profile file: {e}")
+            return None
         # just broken down by new lines
         return df
 
@@ -1590,21 +2471,75 @@ class AnsysQ3DSetup(HfssSetup):
             f'"mSie", {frequency}, {MatrixType}, '
             f"{pass_number}, {ACPlusDCResistance}"
         )
-        self.parent._design.ExportMatrixData(
-            path,
-            soln_type,
-            variation,
-            f"{self.name}:{solution_kind}",
-            "Original",
-            "ohm",
-            "nH",
-            "fF",
-            "mSie",
-            frequency,
-            MatrixType,
-            pass_number,
-            ACPlusDCResistance,
-        )
+        
+        # Try PyAEDT native API first (works better with gRPC backend)
+        export_success = False
+        if using_pyaedt():
+            # PyAEDT doesn't support per-pass exports (AdaptivePass with pass_number)
+            # Only "LastAdaptive" is supported via PyAEDT
+            if solution_kind == "AdaptivePass":
+                logger.debug(
+                    f"PyAEDT doesn't support per-pass matrix export (AdaptivePass). "
+                    f"Pass {pass_number} skipped."
+                )
+                # Return None to indicate this operation is not supported
+                return None, None, (None, None), None
+            
+            pyaedt_app = self.parent._get_pyaedt_app()
+            if pyaedt_app is not None:
+                try:
+                    # PyAEDT's export_matrix_data method (Q3D specific)
+                    # Signature: export_matrix_data(file_name, problem_type, variations, setup, sweep, 
+                    #                               reduce_matrix, r_unit, l_unit, c_unit, g_unit, 
+                    #                               freq, freq_unit, matrix_type, export_ac_dc_res, ...)
+                    if hasattr(pyaedt_app, 'export_matrix_data'):
+                        pyaedt_app.export_matrix_data(
+                            file_name=path,
+                            problem_type=soln_type,
+                            variations=variation if variation else None,
+                            setup=self.name,
+                            sweep=solution_kind,  # e.g., "LastAdaptive"
+                            reduce_matrix="Original",
+                            r_unit="ohm",
+                            l_unit="nH",
+                            c_unit="fF",
+                            g_unit="mSie",
+                            freq=frequency,
+                            matrix_type=MatrixType,
+                            export_ac_dc_res=ACPlusDCResistance
+                        )
+                        export_success = True
+                        logger.debug(f"PyAEDT export_matrix_data succeeded: {path}")
+                except Exception as e:
+                    logger.debug(f"PyAEDT export_matrix_data failed: {e}, falling back to COM")
+        
+        # Fall back to COM method
+        if not export_success:
+            try:
+                self.parent._get_odesign().ExportMatrixData(
+                    path,
+                    soln_type,
+                    variation,
+                    f"{self.name}:{solution_kind}",
+                    "Original",
+                    "ohm",
+                    "nH",
+                    "fF",
+                    "mSie",
+                    frequency,
+                    MatrixType,
+                    pass_number,
+                    ACPlusDCResistance,
+                )
+                export_success = True
+            except Exception as e:
+                logger.error(f"ExportMatrixData failed: {e}")
+                return None, None, (None, None), None
+
+        # Verify the file was created
+        if not os.path.exists(path):
+            logger.error(f"Matrix data file was not created: {path}")
+            return None, None, (None, None), None
 
         (
             df_cmat,
@@ -2046,7 +2981,9 @@ class HfssReport(COMWrapper):
         self.name = name
 
     def export_to_file(self, filename):
+        """Export report to file. Uses PyAEDT native API when available via _ReporterWrapper."""
         filepath = os.path.abspath(filename)
+        # _reporter is a _ReporterWrapper that handles PyAEDT compatibility
         self.parent_design._reporter.ExportToFile(self.name, filepath)
 
     def get_arrays(self):
@@ -2409,7 +3346,7 @@ class HfssModeler(COMWrapper):
         # TODO: make mesh tis own  class with properties
         prop_tab = "MeshSetupTab"
         prop_server = f"MeshSetup:{mesh_name}"
-        prop_names = self.parent._design.GetProperties("MeshSetupTab", prop_server)
+        prop_names = self.parent._get_odesign().GetProperties("MeshSetupTab", prop_server)
         dic = {}
         for name in prop_names:
             dic[name] = self._modeler.GetPropertyValue(prop_tab, prop_server, name)
@@ -3624,7 +4561,28 @@ class CalcObject(COMWrapper):
             args.extend(["Freq:=", self.setup.solution_freq])
 
         self.calc_module.ClcEval(setup_name, args)
-        return float(self.calc_module.GetTopEntryValue(setup_name, args)[0])
+        result = self.calc_module.GetTopEntryValue(setup_name, args)
+        
+        # Handle different return types from COM vs gRPC backends
+        # COM returns a tuple/list, gRPC may return a dict
+        if isinstance(result, dict):
+            logger.debug(f"GetTopEntryValue returned dict: {result}")
+            # PyAEDT gRPC backend may return dict with numeric keys or 'value' key
+            if 0 in result:
+                return float(result[0])
+            elif 'value' in result:
+                return float(result['value'])
+            elif len(result) > 0:
+                # Try to get first value from dict
+                first_val = next(iter(result.values()))
+                if isinstance(first_val, (int, float, str)):
+                    return float(first_val)
+                elif isinstance(first_val, (list, tuple)) and len(first_val) > 0:
+                    return float(first_val[0])
+            raise ValueError(f"Cannot extract float from GetTopEntryValue result: {result}")
+        else:
+            # COM backend returns tuple/list
+            return float(result[0])
 
 
 class NamedCalcObject(CalcObject):
@@ -3647,23 +4605,28 @@ class ConstantVecCalcObject(CalcObject):
 
 
 def get_active_project():
-    """If you see the error:
+    """
+    Get the active project from Ansys.
+    
+    Note for COM backend on Windows: If you see the error
     "The requested operation requires elevation."
     then you need to run your python as an admin.
+    
+    Note for pyaedt backend: No admin privileges required.
     """
-    import ctypes
-    import os
-
-    try:
-        is_admin = os.getuid() == 0
-    except AttributeError:
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
-    if not is_admin:
-        print(
-            "\033[93m WARNING: you are not running as an admin! \
-            You need to run as an admin. You will probably get an error next.\
-                 \033[0m"
-        )
+    # Only check admin on Windows with COM backend
+    if using_com():
+        import ctypes
+        try:
+            is_admin = os.getuid() == 0
+        except AttributeError:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        if not is_admin:
+            print(
+                "\033[93m WARNING: you are not running as an admin! \
+                You need to run as an admin. You will probably get an error next.\
+                     \033[0m"
+            )
 
     app = HfssApp()
     desktop = app.get_app_desktop()
@@ -3682,15 +4645,28 @@ def get_report_arrays(name: str):
 
 
 def load_ansys_project(
-    proj_name: str, project_path: str = None, extension: str = ".aedt"
+    proj_name: str, project_path: str = None, extension: str = ".aedt",
+    version: str = None, non_graphical: bool = False
 ):
     """
     Utility function to load an Ansys project.
+    
+    Supports both pyaedt (cross-platform) and COM (Windows) backends.
 
     Args:
-        proj_name : None  --> get active. (make sure 2 run as admin)
-        extension : `aedt` is for 2016 version and newer
+        proj_name : Project name. Use None to get active project 
+            (make sure to run as admin for COM backend on Windows).
+        project_path : Path to the project directory.
+        extension : Project file extension. `aedt` is for 2016 version and newer.
+        version : Ansys version string (e.g., "2024.1"). Only used with pyaedt backend.
+            If None, connects to the latest installed version.
+        non_graphical : Run in non-graphical mode. Only used with pyaedt backend.
+        
+    Returns:
+        tuple: (app, desktop, project) objects
     """
+    logger.info(f"Using backend: {_BACKEND}")
+    
     if project_path:
         # convert slashes correctly for system
         project_path = Path(project_path)
@@ -3712,12 +4688,12 @@ def load_ansys_project(
                 % project_path
             )
 
-        if (project_path / ".lock").is_file():
+        if (Path(str(project_path) + ".lock")).is_file():
             logger.warning(
                 "\t\tFile is locked. \N{fearful face} If connection fails, delete the .lock file."
             )
 
-    app = HfssApp()
+    app = HfssApp(version=version, non_graphical=non_graphical)
     logger.info("\tOpened Ansys App")
 
     desktop = app.get_app_desktop()

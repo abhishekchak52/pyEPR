@@ -26,6 +26,33 @@ try:
 except (ImportError, ModuleNotFoundError):
     pass
 
+
+def _safe_inner_product(bra, ket):
+    """
+    Safely compute inner product <bra|ket>, handling sparse matrix int32 index issues.
+    Returns a complex scalar (not a Qobj).
+    """
+    try:
+        result = bra.dag() * ket
+        # Extract scalar from 1x1 Qobj
+        return complex(result.full()[0, 0])
+    except TypeError:
+        # Sparse matrix index issue - use dense
+        result = bra.dag().full() @ ket.full()
+        return complex(result[0, 0])
+
+
+def _safe_expectation(left, middle, right):
+    """
+    Safely compute <left|middle|right>, handling sparse matrix int32 index issues.
+    """
+    try:
+        return (left.dag() * middle * right).data.toarray()[0, 0]
+    except TypeError:
+        # Sparse matrix index issue - use dense
+        result = left.dag().full() @ middle.full() @ right.full()
+        return result[0, 0]
+
 __all__ = [
     "epr_numerical_diagonalization",
     "make_dispersive",
@@ -221,7 +248,7 @@ def make_dispersive(
             """this function generates all possible multi-indices for three modes for a given fock_trunc"""
 
         def get_expect_number(left, middle, right):
-            return (left.dag() * middle * right).data.toarray()[0, 0]
+            return _safe_expectation(left, middle, right)
             """this function calculates the expectation value of an operator called "middle" """
 
         def get_basis0(fock_trunc, num_modes):
@@ -240,11 +267,7 @@ def make_dispersive(
                 for i in range(len(original_basis)):
                     if (energy0[i] - evalue) > 1e-3:
                         new_vector += (
-                            (
-                                (
-                                    original_basis[i].dag() * H_nl * original_vector
-                                ).data.toarray()[0, 0]
-                            )
+                            _safe_expectation(original_basis[i], H_nl, original_vector)
                             * original_basis[i]
                             / (evalue - energy0[i])
                         )
@@ -260,14 +283,14 @@ def make_dispersive(
             evalue0 = get_expect_number(vector0, H_lin, vector0)
             vector1 = PT_on_vector(vector0, basis0, H_nl, evalues0, evalue0)
 
-            index = np.argmax([(vector1.dag() * evec).norm() for evec in evecs])
+            index = np.argmax([abs(_safe_inner_product(vector1, evec)) for evec in evecs])
             return evals[index], evecs[index]
 
     else:
 
         def closest_state_to(s):
             def distance(s2):
-                return np.abs((s.dag() * s2[1]))
+                return np.abs(_safe_inner_product(s, s2[1]))
 
             return max(zip(evals, evecs), key=distance)
 
