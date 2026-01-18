@@ -563,7 +563,7 @@ def set_property(prop_holder, prop_tab, prop_server, name, value, prop_args=None
 
 class HfssApp(COMWrapper):
     def __init__(self, ProgID="AnsoftHfss.HfssScriptInterface", 
-                 version=None, non_graphical=False, new_desktop_session=False):
+                 version=None, non_graphical=None, new_desktop=None):
         """
         Connect to Ansys AEDT application.
         
@@ -578,7 +578,7 @@ class HfssApp(COMWrapper):
             version (str): Ansys version string e.g., "2024.1" (pyaedt backend).
                 If None, connects to the latest installed version.
             non_graphical (bool): Run in non-graphical mode (pyaedt backend).
-            new_desktop_session (bool): Start a new desktop session (pyaedt backend).
+            new_desktop (bool): Start a new desktop (pyaedt backend).
         """
         super(HfssApp, self).__init__()
         
@@ -588,10 +588,13 @@ class HfssApp(COMWrapper):
         
         if using_pyaedt():
             # Use pyaedt backend (cross-platform)
+
+            non_graphical = os.getenv("PYAEDT_NON_GRAPHICAL", "False")
             self._pyaedt_desktop = PyAEDTDesktop(
-                specified_version=version,
+                version=version,
                 non_graphical=non_graphical,
-                new_desktop_session=new_desktop_session
+                new_desktop=new_desktop,
+                close_on_exit=True
             )
             _pyaedt_sessions.append(self._pyaedt_desktop)
             # Get the underlying oDesktop object for compatibility
@@ -1227,14 +1230,12 @@ class HfssDesign(COMWrapper):
                 self._pyaedt_app = PyAEDTQ3d(
                     project=project_name,
                     design=design_name,
-                    new_desktop=False  # Connect to existing desktop
                 )
             else:
                 # Eigenmode, DrivenModal, DrivenTerminal all use Hfss
                 self._pyaedt_app = PyAEDTHfss(
                     project=project_name,
                     design=design_name,
-                    new_desktop=False  # Connect to existing desktop
                 )
             logger.debug(f"Created PyAEDT app for {project_name}/{design_name}")
             return self._pyaedt_app
