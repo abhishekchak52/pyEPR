@@ -7,7 +7,7 @@ import signal
 import time
 import types
 
-from .. import logger
+from pyEPR import logger
 
 _release_fns = []
 _pyaedt_sessions = []

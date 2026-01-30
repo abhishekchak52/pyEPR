@@ -1,7 +1,7 @@
 """ModelEntity and geometry classes for pyaedt backend."""
 
-from ._units import VariableString
-from ._wrapper import HfssPropertyObject, make_float_prop, make_str_prop
+from pyEPR.ansys._units import VariableString
+from pyEPR.ansys._wrapper import HfssPropertyObject, make_float_prop, make_str_prop
 
 
 class ModelEntity(str, HfssPropertyObject):

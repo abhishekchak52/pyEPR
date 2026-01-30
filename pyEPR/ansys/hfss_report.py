@@ -5,7 +5,7 @@ import tempfile
 
 import numpy as np
 
-from ._wrapper import COMWrapper
+from pyEPR.ansys._wrapper import COMWrapper
 
 
 class HfssReport(COMWrapper):

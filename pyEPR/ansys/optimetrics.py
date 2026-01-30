@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from ._wrapper import COMWrapper
+from pyEPR.ansys._wrapper import COMWrapper
 
 
 class Optimetrics(COMWrapper):

@@ -4,8 +4,8 @@ import tempfile
 
 import numpy as np
 
-from .. import logger
-from ._wrapper import COMWrapper
+from pyEPR import logger
+from pyEPR.ansys._wrapper import COMWrapper
 
 
 class HfssDesignSolutions(COMWrapper):

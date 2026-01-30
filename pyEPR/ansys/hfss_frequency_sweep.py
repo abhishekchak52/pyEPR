@@ -5,10 +5,10 @@ import tempfile
 
 import numpy as np
 
-from .. import logger
-from ._units import increment_name
-from ._wrapper import COMWrapper, make_float_prop, make_str_prop
-from .hfss_report import HfssReport
+from pyEPR import logger
+from pyEPR.ansys._units import increment_name
+from pyEPR.ansys._wrapper import COMWrapper, make_float_prop, make_str_prop
+from pyEPR.ansys.hfss_report import HfssReport
 
 
 class HfssFrequencySweep(COMWrapper):

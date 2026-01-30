@@ -1,7 +1,7 @@
 """HfssProject for pyaedt backend."""
 
-from ._units import VariableString, increment_name
-from ._wrapper import _unwrap_aedt_handle, COMWrapper
+from pyEPR.ansys._units import VariableString, increment_name
+from pyEPR.ansys._wrapper import _unwrap_aedt_handle, COMWrapper
 
 
 class HfssProject(COMWrapper):

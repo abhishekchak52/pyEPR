@@ -6,7 +6,7 @@ Respects PYEPR_USE_PYAEDT: default (unset) = COM; when set truthy = pyaedt if av
 import os
 
 # Import logger from parent package (ansys is pyEPR.ansys)
-from .. import logger
+from pyEPR import logger
 
 _PYAEDT_AVAILABLE = False
 _COM_AVAILABLE = False

@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pandas as pd
 
-from .. import logger
-from ._units import increment_name, ureg
-from ._wrapper import HfssPropertyObject, make_float_prop, make_int_prop, make_str_prop
-from .hfss_design_solutions import (
+from pyEPR import logger
+from pyEPR.ansys._units import increment_name, ureg
+from pyEPR.ansys._wrapper import HfssPropertyObject, make_float_prop, make_int_prop, make_str_prop
+from pyEPR.ansys.hfss_design_solutions import (
     HfssDMDesignSolutions,
     HfssEMDesignSolutions,
     HfssDTDesignSolutions,
     HfssQ3DDesignSolutions,
 )
-from .hfss_frequency_sweep import HfssFrequencySweep
+from pyEPR.ansys.hfss_frequency_sweep import HfssFrequencySweep
 
 
 class HfssSetup(HfssPropertyObject):

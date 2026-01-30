@@ -4,9 +4,9 @@ import os
 
 from ansys.aedt.core import Desktop as PyAEDTDesktop
 
-from .. import logger
-from ._wrapper import COMWrapper, _add_release_fn, _pyaedt_sessions
-from .hfss_desktop import HfssDesktop
+from pyEPR import logger
+from pyEPR.ansys._wrapper import COMWrapper, _add_release_fn, _pyaedt_sessions
+from pyEPR.ansys.hfss_desktop import HfssDesktop
 
 
 class HfssApp(COMWrapper):

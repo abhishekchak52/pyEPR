@@ -1,7 +1,7 @@
 """HfssDesktop for pyaedt backend."""
 
-from ._wrapper import COMWrapper, _unwrap_aedt_handle
-from .hfss_project import HfssProject
+from pyEPR.ansys._wrapper import COMWrapper, _unwrap_aedt_handle
+from pyEPR.ansys.hfss_project import HfssProject
 
 
 class HfssDesktop(COMWrapper):

@@ -2,10 +2,10 @@
 
 import numpy as np
 
-from .. import logger
-from ._units import var
-from ._wrapper import COMWrapper
-from .model_entity import Box, OpenPolyline, Polyline, Rect
+from pyEPR import logger
+from pyEPR.ansys._units import var
+from pyEPR.ansys._wrapper import COMWrapper
+from pyEPR.ansys.model_entity import Box, OpenPolyline, Polyline, Rect
 
 
 class HfssModeler(COMWrapper):

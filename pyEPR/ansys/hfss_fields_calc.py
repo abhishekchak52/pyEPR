@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from .. import logger
-from ._wrapper import COMWrapper
-from .hfss_setup import HfssDMSetup
+from pyEPR import logger
+from pyEPR.ansys._wrapper import COMWrapper
+from pyEPR.ansys.hfss_setup import HfssDMSetup
 
 
 class HfssFieldsCalc(COMWrapper):

@@ -2,7 +2,7 @@
 
 import os
 
-from .. import logger
+from pyEPR import logger
 
 
 class _ReporterWrapper:

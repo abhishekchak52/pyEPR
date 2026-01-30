@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from .. import logger
-from ._backend import get_backend
-from .hfss_app import HfssApp
-from .hfss_report import HfssReport
+from pyEPR import logger
+from pyEPR.ansys._backend import get_backend
+from pyEPR.ansys.hfss_app import HfssApp
+from pyEPR.ansys.hfss_report import HfssReport
 
 
 def get_active_project():

@@ -5,10 +5,10 @@ Dispatches to COM backend (ansys_com) or pyaedt backend based on PYEPR_USE_PYAED
 Default (unset) = COM; when set truthy = pyaedt if available.
 """
 
-from . import _backend
+from pyEPR.ansys import _backend
 
 if _backend.get_backend() == "com":
-    from .. import ansys_com
+    from pyEPR import ansys_com
     for _name in dir(ansys_com):
         if not _name.startswith("_"):
             globals()[_name] = getattr(ansys_com, _name)
@@ -21,14 +21,14 @@ if _backend.get_backend() == "com":
     _all.extend(["get_available_backends", "get_backend", "set_backend", "using_pyaedt", "using_com"])
     __all__ = sorted(set(_all))
 else:
-    from ._backend import (
+    from pyEPR.ansys._backend import (
         get_available_backends,
         get_backend,
         set_backend,
         using_com,
         using_pyaedt,
     )
-    from ._units import (
+    from pyEPR.ansys._units import (
         BASIS_ORDER,
         LENGTH_UNIT,
         LENGTH_UNIT_ASSUMED,
@@ -46,7 +46,7 @@ else:
         var,
         VariableString,
     )
-    from ._wrapper import (
+    from pyEPR.ansys._wrapper import (
         COMWrapper,
         HfssPropertyObject,
         _add_release_fn,
@@ -58,37 +58,37 @@ else:
         release,
         set_property,
     )
-    from .hfss_app import HfssApp
-    from .hfss_desktop import HfssDesktop
-    from .hfss_project import HfssProject
-    from .hfss_design import HfssDesign
-    from .hfss_setup import (
+    from pyEPR.ansys.hfss_app import HfssApp
+    from pyEPR.ansys.hfss_desktop import HfssDesktop
+    from pyEPR.ansys.hfss_project import HfssProject
+    from pyEPR.ansys.hfss_design import HfssDesign
+    from pyEPR.ansys.hfss_setup import (
         AnsysQ3DSetup,
         HfssDMSetup,
         HfssDTSetup,
         HfssEMSetup,
         HfssSetup,
     )
-    from .hfss_design_solutions import (
+    from pyEPR.ansys.hfss_design_solutions import (
         HfssDMDesignSolutions,
         HfssDTDesignSolutions,
         HfssEMDesignSolutions,
         HfssDesignSolutions,
         HfssQ3DDesignSolutions,
     )
-    from .hfss_frequency_sweep import HfssFrequencySweep
-    from .hfss_report import HfssReport
-    from .optimetrics import Optimetrics
-    from .hfss_modeler import HfssModeler
-    from .model_entity import Box, ModelEntity, OpenPolyline, Polyline, Rect
-    from .hfss_fields_calc import (
+    from pyEPR.ansys.hfss_frequency_sweep import HfssFrequencySweep
+    from pyEPR.ansys.hfss_report import HfssReport
+    from pyEPR.ansys.optimetrics import Optimetrics
+    from pyEPR.ansys.hfss_modeler import HfssModeler
+    from pyEPR.ansys.model_entity import Box, ModelEntity, OpenPolyline, Polyline, Rect
+    from pyEPR.ansys.hfss_fields_calc import (
         CalcObject,
         ConstantCalcObject,
         ConstantVecCalcObject,
         HfssFieldsCalc,
         NamedCalcObject,
     )
-    from .load import (
+    from pyEPR.ansys.load import (
         get_active_design,
         get_active_project,
         get_report_arrays,

@@ -5,13 +5,13 @@ from pathlib import Path
 from ansys.aedt.core import Hfss as PyAEDTHfss
 from ansys.aedt.core import Q3d as PyAEDTQ3d
 
-from .. import logger
-from ._reporter import _ReporterWrapper
-from ._wrapper import _unwrap_aedt_handle, COMWrapper
-from .hfss_fields_calc import HfssFieldsCalc
-from .hfss_modeler import HfssModeler
-from .hfss_setup import AnsysQ3DSetup, HfssDMSetup, HfssDTSetup, HfssEMSetup
-from .optimetrics import Optimetrics
+from pyEPR import logger
+from pyEPR.ansys._reporter import _ReporterWrapper
+from pyEPR.ansys._wrapper import _unwrap_aedt_handle, COMWrapper
+from pyEPR.ansys.hfss_fields_calc import HfssFieldsCalc
+from pyEPR.ansys.hfss_modeler import HfssModeler
+from pyEPR.ansys.hfss_setup import AnsysQ3DSetup, HfssDMSetup, HfssDTSetup, HfssEMSetup
+from pyEPR.ansys.optimetrics import Optimetrics
 
 
 class HfssDesign(COMWrapper):
