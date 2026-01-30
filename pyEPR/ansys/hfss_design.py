@@ -7,6 +7,7 @@ from ansys.aedt.core import Q3d as PyAEDTQ3d
 
 from pyEPR import logger
 from pyEPR.ansys._reporter import _ReporterWrapper
+from pyEPR.ansys._units import increment_name
 from pyEPR.ansys._wrapper import _unwrap_aedt_handle, COMWrapper
 from pyEPR.ansys.hfss_fields_calc import HfssFieldsCalc
 from pyEPR.ansys.hfss_modeler import HfssModeler
@@ -146,6 +147,172 @@ class HfssDesign(COMWrapper):
             return AnsysQ3DSetup(self, name)
         logger.warning("Unknown solution type '%s'. Defaulting to DrivenModal setup.", self.solution_type)
         return HfssDMSetup(self, name)
+
+    def create_q3d_setup(
+        self,
+        freq_ghz=5.0,
+        name="Setup",
+        save_fields=False,
+        enabled=True,
+        max_passes=15,
+        min_passes=2,
+        min_converged_passes=2,
+        percent_error=0.5,
+        percent_refinement=30,
+        auto_increase_solution_order=True,
+        solution_order="High",
+        solver_type="Iterative",
+    ):
+        name = increment_name(name, self.get_setup_names())
+        self._setup_module.InsertSetup(
+            "Matrix",
+            [
+                f"NAME:{name}",
+                "AdaptiveFreq:=",
+                f"{freq_ghz}GHz",
+                "SaveFields:=",
+                save_fields,
+                "Enabled:=",
+                enabled,
+                [
+                    "NAME:Cap",
+                    "MaxPass:=",
+                    max_passes,
+                    "MinPass:=",
+                    min_passes,
+                    "MinConvPass:=",
+                    min_converged_passes,
+                    "PerError:=",
+                    percent_error,
+                    "PerRefine:=",
+                    percent_refinement,
+                    "AutoIncreaseSolutionOrder:=",
+                    auto_increase_solution_order,
+                    "SolutionOrder:=",
+                    solution_order,
+                    "Solver Type:=",
+                    solver_type,
+                ],
+            ],
+        )
+        return AnsysQ3DSetup(self, name)
+
+    def create_dm_setup(
+        self,
+        freq_ghz=1,
+        name="Setup",
+        max_delta_s=0.1,
+        max_passes=10,
+        min_passes=1,
+        min_converged=1,
+        pct_refinement=30,
+        basis_order=-1,
+    ):
+        name = increment_name(name, self.get_setup_names())
+        self._setup_module.InsertSetup(
+            "HfssDriven",
+            [
+                "NAME:" + name,
+                "Frequency:=",
+                str(freq_ghz) + "GHz",
+                "MaxDeltaS:=",
+                max_delta_s,
+                "MaximumPasses:=",
+                max_passes,
+                "MinimumPasses:=",
+                min_passes,
+                "MinimumConvergedPasses:=",
+                min_converged,
+                "PercentRefinement:=",
+                pct_refinement,
+                "IsEnabled:=",
+                True,
+                "BasisOrder:=",
+                basis_order,
+            ],
+        )
+        return HfssDMSetup(self, name)
+
+    def create_dt_setup(
+        self,
+        freq_ghz=1,
+        name="Setup",
+        max_delta_s=0.1,
+        max_passes=10,
+        min_passes=1,
+        min_converged=1,
+        pct_refinement=30,
+        basis_order=-1,
+    ):
+        name = increment_name(name, self.get_setup_names())
+        self._setup_module.InsertSetup(
+            "HfssDriven",
+            [
+                "NAME:" + name,
+                "Frequency:=",
+                str(freq_ghz) + "GHz",
+                "MaxDeltaS:=",
+                max_delta_s,
+                "MaximumPasses:=",
+                max_passes,
+                "MinimumPasses:=",
+                min_passes,
+                "MinimumConvergedPasses:=",
+                min_converged,
+                "PercentRefinement:=",
+                pct_refinement,
+                "IsEnabled:=",
+                True,
+                "BasisOrder:=",
+                basis_order,
+            ],
+        )
+        return HfssDTSetup(self, name)
+
+    def create_em_setup(
+        self,
+        name="Setup",
+        min_freq_ghz=1,
+        n_modes=1,
+        max_delta_f=0.1,
+        max_passes=10,
+        min_passes=1,
+        min_converged=1,
+        pct_refinement=30,
+        basis_order=-1,
+    ):
+        name = increment_name(name, self.get_setup_names())
+        self._setup_module.InsertSetup(
+            "HfssEigen",
+            [
+                "NAME:" + name,
+                "MinimumFrequency:=",
+                str(min_freq_ghz) + "GHz",
+                "NumModes:=",
+                n_modes,
+                "MaxDeltaFreq:=",
+                max_delta_f,
+                "ConvergeOnRealFreq:=",
+                True,
+                "MaximumPasses:=",
+                max_passes,
+                "MinimumPasses:=",
+                min_passes,
+                "MinimumConvergedPasses:=",
+                min_converged,
+                "PercentRefinement:=",
+                pct_refinement,
+                "IsEnabled:=",
+                True,
+                "BasisOrder:=",
+                basis_order,
+            ],
+        )
+        return HfssEMSetup(self, name)
+
+    def delete_setup(self, name):
+        if name in self.get_setup_names():
+            self._setup_module.DeleteSetups(name)
 
     def get_variable_names(self):
         try:

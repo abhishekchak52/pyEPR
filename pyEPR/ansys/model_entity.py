@@ -1,7 +1,9 @@
 """ModelEntity and geometry classes for pyaedt backend."""
 
-from pyEPR.ansys._units import VariableString
-from pyEPR.ansys._wrapper import HfssPropertyObject, make_float_prop, make_str_prop
+import numpy as np
+
+from pyEPR.ansys._units import VariableString, increment_name
+from pyEPR.ansys._wrapper import HfssPropertyObject, make_float_prop, make_prop, make_str_prop
 
 
 class ModelEntity(str, HfssPropertyObject):
@@ -24,7 +26,7 @@ class ModelEntity(str, HfssPropertyObject):
         return str.__new__(cls, val)
 
     def __init__(self, val, modeler):
-        super(ModelEntity, cls).__init__()
+        super(ModelEntity, self).__init__()
         self.modeler = modeler
         self.prop_server = self + ":" + self.model_command + ":1"
 
@@ -98,8 +100,51 @@ class Polyline(ModelEntity):
 
 class OpenPolyline(ModelEntity):
     model_command = "CreatePolyline"
+    show_direction = make_prop(
+        "Show Direction",
+        prop_tab="Geometry3DAttributeTab",
+        prop_server=lambda self: self,
+    )
 
     def __init__(self, name, modeler, points=None):
         super(OpenPolyline, self).__init__(name, modeler)
         self.prop_holder = modeler._modeler
-        self.points = points or []
+        if points is not None:
+            self.points = points
+            self.n_points = len(points)
+        else:
+            self.points = []
+
+    def vertices(self):
+        return self.modeler.get_vertex_ids(self)
+
+    def fillet(self, radius, vertex_index):
+        self.modeler._fillet(radius, vertex_index, self)
+
+    def fillets(self, radius, do_not_fillet=None):
+        """do_not_fillet: Index list of vertices to not fillet (1-based)."""
+        if do_not_fillet is None:
+            do_not_fillet = []
+        raw_list_vertices = self.modeler.get_vertex_ids(self)
+        list_vertices = []
+        for vertex in raw_list_vertices[1:-1]:
+            list_vertices.append(int(vertex))
+        list_vertices = list(
+            map(int, np.delete(list_vertices, np.array(do_not_fillet, dtype=int) - 1))
+        )
+        if len(list_vertices) != 0:
+            self.modeler._fillets(radius, list_vertices, self)
+
+    def sweep_along_path(self, to_sweep):
+        return self.modeler._sweep_along_path(to_sweep, self)
+
+    def rename(self, new_name):
+        new_name = increment_name(
+            new_name, list(self.modeler.get_objects_in_group("Lines"))
+        )
+        self.modeler.rename_obj(self, new_name)
+        return OpenPolyline(new_name, self.modeler)
+
+    def copy(self, new_name):
+        new_obj = OpenPolyline(self.modeler.copy(self), self.modeler)
+        return new_obj.rename(new_name)
