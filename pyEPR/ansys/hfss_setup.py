@@ -331,24 +331,45 @@ class AnsysQ3DSetup(HfssSetup):
         pyaedt_app = self.parent._get_pyaedt_app()
 
         setup_name = f"{self.name} : {solution_kind}"
-        pass_c_data = pyaedt_app.post.get_solution_data(
-            expressions=pyaedt_app.post.get_all_report_quantities()["Matrix"][setup_name]["C Matrix"],
+        cap_data = pyaedt_app.post.get_solution_data(
+            expressions=pyaedt_app.post.get_all_report_quantities()["Matrix"][
+                setup_name
+            ]["C Matrix"],
             context="Original",
+            report_category="Matrix",
             setup_sweep_name=setup_name,
-            variations={"Pass": [pass_number]})
+            variations={"Pass": [pass_number]},
+        )
 
-        # Convert the data to a pandas dataframe
-        # From the data, we pick the matrix (mag and phase) and convert it to a pandas dataframe.
-        # We only care about the magnitude of the matrix, so we keep the first element of the mag_phase matrix. 
-        # The data returns a dict with each matrix element as a key, and the value is a numpy array of 3 numbers, [frequency, pass number, value]. We only keep the last number. 
-        # 
+        # Default units are pF. COM interface usually returns fF.
+        cap_units = pyaedt_app.units.capacitance
 
-        cap_df_long = pd.DataFrame([(*k[2:-1].split(','),  v[0, -1])for k, v in pass_c_data.full_matrix_mag_phase[0].items()], columns=["node1", "node2", "cap"])
+        # We only care about the real part of the matrix, so we keep the first element of the real_imag matrix.
+        # The data returns a list of dicts with each matrix element as a key, and the value is a (1, 3) numpy array, [[frequency, pass number, value]]. We only keep the last number. We convert this to a list of tuples for easier conversion to a pandas dataframe.
+        # For each matrix element, we extract the two node names and the capacitance value.
+        pass_c_mat_real = [
+            (*k[2:-1].split(","), ureg(f"{v[0, -1]} {cap_units}").to("fF").magnitude)
+            for k, v in cap_data.full_matrix_real_imag[0].items()
+        ]
 
-        # NaN matrices are returned if the solution has not converged or failed before this pass.
+        # Convert the data to a pandas dataframe. The initial dataframe is constructed in the long format with node1, node2, and cap as columns. If node1=node2, the value is the diagonal element of the Maxwell matrix (self-capacitance of the node + all capacitances coupling to the node).
+        cap_df_long = pd.DataFrame(pass_c_mat_real, columns=["node1", "node2", "cap"])
+
+        # NaN matrices are returned if the solution has converged or failed before this pass.
+        # The renderer in Qiskit Metal expects this to raise an error after convergence. .
         if cap_df_long["cap"].isna().any():
-            raise pd.errors.EmptyDataError("NaN Capacitance matrix returned. Solution may have converged or failed before this pass.")
-        cap_df = cap_df_long.pivot(index="node1", columns="node2", values="cap").rename_axis(None, axis=1).rename_axis(None, axis=0)
+            raise pd.errors.EmptyDataError()
 
-        return cap_df, pyaedt_app.units.capacitance, (None, None), variation
+        cap_df = (
+            cap_df_long.pivot(index="node1", columns="node2", values="cap")
+            .rename_axis(None, axis=1)
+            .rename_axis(None, axis=0)
+        )
+        logger.info(
+            f"Capacitance (fF) for {setup_name}, \
+                 pass {pass_number} and sweep: \
+                    {cap_data.primary_sweep} = {cap_data.primary_sweep_values}"
+        )
+
+        return cap_df, cap_units, (None, None), variation
 
