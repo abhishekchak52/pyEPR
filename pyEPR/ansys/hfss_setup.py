@@ -371,5 +371,5 @@ class AnsysQ3DSetup(HfssSetup):
                     {cap_data.primary_sweep} = {cap_data.primary_sweep_values}"
         )
 
-        return cap_df, cap_units, (None, None), variation
+        return cap_df, "fF", (None, None), variation
 
