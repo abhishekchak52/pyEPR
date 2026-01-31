@@ -4,6 +4,7 @@ import numpy as np
 
 from pyEPR.ansys._units import VariableString, increment_name
 from pyEPR.ansys._wrapper import HfssPropertyObject, make_float_prop, make_prop, make_str_prop
+from pyEPR.ansys._units import LENGTH_UNIT
 
 
 class ModelEntity(str, HfssPropertyObject):
@@ -81,21 +82,87 @@ class Rect(ModelEntity):
 
 
 class Polyline(ModelEntity):
+    """
+    Assume closed polyline, which creates a polygon.
+    """
+
     model_command = "CreatePolyline"
 
     def __init__(self, name, modeler, points=None):
         super(Polyline, self).__init__(name, modeler)
         self.prop_holder = modeler._modeler
-        self.points = points
+        if points is not None:
+            self.points = points
+            self.n_points = len(points)
+        else:
+            pass
+            # TODO: points = collection of points
 
-    def make_center_line(self, axis):
+    #        axis = find_orth_axis()
+
+    # TODO: find the plane of the polyline for now, assume Z
+    #    def find_orth_axis():
+    #        X, Y, Z = (True, True, True)
+    #        for point in points:
+    #            X =
+
+    def unite(self, list_other):
+        union = self.modeler.unite(self + list_other)
+        return Polyline(union, self.modeler)
+
+    def make_center_line(self, axis):  # Expects to act on a rectangle...
+        # first : find center and size
+        center = [0, 0, 0]
+
+        for point in self.points:
+            center = [
+                center[0] + point[0] / self.n_points,
+                center[1] + point[1] / self.n_points,
+                center[2] + point[2] / self.n_points,
+            ]
+        size = [
+            2 * (center[0] - self.points[0][0]),
+            2 * (center[1] - self.points[0][1]),
+            2 * (center[1] - self.points[0][2]),
+        ]
         axis_idx = ["x", "y", "z"].index(axis.lower())
-        pts = self.points
-        start = [pts[0][0], pts[0][1], pts[0][2]]
-        end = [pts[-1][0], pts[-1][1], pts[-1][2]]
-        start[axis_idx] = min(p[axis_idx] for p in pts)
-        end[axis_idx] = max(p[axis_idx] for p in pts)
+        start = [c for c in center]
+        start[axis_idx] -= size[axis_idx] / 2
+        start = [self.modeler.eval_var_str(s, unit=LENGTH_UNIT) for s in start]  # TODO
+        end = [c for c in center]
+        end[axis_idx] += size[axis_idx] / 2
+        end = [self.modeler.eval_var_str(s, unit=LENGTH_UNIT) for s in end]
         return start, end
+
+    def make_rlc_boundary(self, axis, r=0, l=0, c=0, name="LumpRLC"):
+        name = str(self) + "_" + name
+        start, end = self.make_center_line(axis)
+        self.modeler._make_lumped_rlc(
+            r, l, c, start, end, ["Objects:=", [self]], name=name
+        )
+
+    def fillet(self, radius, vertex_index):
+        self.modeler._fillet(radius, vertex_index, self)
+
+    def vertices(self):
+        return self.modeler.get_vertex_ids(self)
+
+    def rename(self, new_name):
+        """
+        Warning: The increment_name only works if the sheet has not been stracted or used as a tool elsewhere.
+        These names are not checked; they require modifying get_objects_in_group.
+
+        """
+        new_name = increment_name(
+            new_name, self.modeler.get_objects_in_group("Sheets")
+        )  # this is for a closed polyline
+
+        # check to get the actual new name in case there was a substracted object with that name
+        face_ids = self.modeler.get_face_ids(str(self))
+        self.modeler.rename_obj(self, new_name)  # now rename
+        if len(face_ids) > 0:
+            new_name = self.modeler.get_object_name_by_face_id(face_ids[0])
+        return Polyline(str(new_name), self.modeler)
 
 
 class OpenPolyline(ModelEntity):
