@@ -315,58 +315,40 @@ class AnsysQ3DSetup(HfssSetup):
         ACPlusDCResistance=False,
         soln_type="C",
     ):
-        import tempfile as tf
-        path = tf.mktemp(suffix=".txt")
-        export_success = False
+        """
+        Refactored to use pyAEDT post processing API to get the matrix data. Specifically, we use the post.get_solution_data() method to get the matrix data.
+
+        Comsumers of this function mostly use default values for the arguments, so we will ignore the ones that aren't available in the pyAEDT post processing API. Consumers do not seem to use the conductance matrix, so we will not export it. The variation argument will be passed through. soln_type, ACPlusDCResistance and frequency are not used.
+
+        If solution_kind is "AdaptivePass", pass_number is used to get the matrix data for the specific pass.
+        If solution_kind is "LastAdaptive", the matrix data for the last pass is returned regardless of the pass_number.
+
+        Returns:
+            df_cmat, user_units, (None, None), design_variation
+
+        """
+
         pyaedt_app = self.parent._get_pyaedt_app()
-        if pyaedt_app is not None and hasattr(pyaedt_app, "export_matrix_data"):
-            try:
-                pyaedt_app.export_matrix_data(
-                    file_name=path, problem_type=soln_type, variations=variation or None,
-                    setup=self.name, sweep=solution_kind, reduce_matrix="Original",
-                    r_unit="ohm", l_unit="nH", c_unit="fF", g_unit="mSie",
-                    freq=frequency, matrix_type=MatrixType, export_ac_dc_res=ACPlusDCResistance,
-                )
-                export_success = True
-            except Exception as e:
-                logger.debug("PyAEDT export_matrix_data failed: %s", e)
-        if not export_success:
-            try:
-                self.parent._get_odesign().ExportMatrixData(
-                    path, soln_type, variation, "%s:%s" % (self.name, solution_kind),
-                    "Original", "ohm", "nH", "fF", "mSie", frequency,
-                    MatrixType, pass_number, ACPlusDCResistance,
-                )
-                export_success = True
-            except Exception as e:
-                logger.error("ExportMatrixData failed: %s", e)
-                return None, None, (None, None), None
-        if not os.path.exists(path):
-            return None, None, (None, None), None
-        return self.load_q3d_matrix(path)
 
-    @staticmethod
-    def _readin_Q3D_matrix(path: str):
-        text = Path(path).read_text()
-        s1 = text.split("Capacitance Matrix")
-        assert len(s1) == 2
-        s2 = s1[1].split("Conductance Matrix")
-        df_cmat = pd.read_csv(io.StringIO(s2[0].strip()), delim_whitespace=True, skipinitialspace=True, index_col=0)
-        units = re.findall(r"C Units:(.*?),", text)[0]
-        if len(s2) > 1:
-            df_cond = pd.read_csv(io.StringIO(s2[1].strip()), delim_whitespace=True, skipinitialspace=True, index_col=0)
-            units_cond = re.findall(r"G Units:(.*?)\n", text)[0]
-        else:
-            df_cond = units_cond = None
-        var = re.findall(r"DesignVariation:(.*?)\n", text)
-        if not var:
-            var = re.findall(r"Design Variation:(.*?)\n", text)
-        design_variation = var[0] if var else ""
-        return df_cmat, units, design_variation, df_cond, units_cond
+        setup_name = f"{self.name} : {solution_kind}"
+        pass_c_data = pyaedt_app.post.get_solution_data(
+            expressions=pyaedt_app.post.get_all_report_quantities()["Matrix"][setup_name]["C Matrix"],
+            context="Original",
+            setup_sweep_name=setup_name,
+            variations={"Pass": [pass_number]})
 
-    @staticmethod
-    def load_q3d_matrix(path, user_units="fF"):
-        (df_cmat, Cunits, design_variation, df_cond, units_cond) = AnsysQ3DSetup._readin_Q3D_matrix(path)
-        q = ureg.parse_expression(Cunits).to(user_units)
-        df_cmat = df_cmat * q.magnitude
-        return df_cmat, user_units, (df_cond, units_cond), design_variation
+        # Convert the data to a pandas dataframe
+        # From the data, we pick the matrix (mag and phase) and convert it to a pandas dataframe.
+        # We only care about the magnitude of the matrix, so we keep the first element of the mag_phase matrix. 
+        # The data returns a dict with each matrix element as a key, and the value is a numpy array of 3 numbers, [frequency, pass number, value]. We only keep the last number. 
+        # 
+
+        cap_df_long = pd.DataFrame([(*k[2:-1].split(','),  v[0, -1])for k, v in pass_c_data.full_matrix_mag_phase[0].items()], columns=["node1", "node2", "cap"])
+
+        # NaN matrices are returned if the solution has not converged or failed before this pass.
+        if cap_df_long["cap"].isna().any():
+            raise pd.errors.EmptyDataError("NaN Capacitance matrix returned. Solution may have converged or failed before this pass.")
+        cap_df = cap_df_long.pivot(index="node1", columns="node2", values="cap").rename_axis(None, axis=1).rename_axis(None, axis=0)
+
+        return cap_df, pyaedt_app.units.capacitance, (None, None), variation
+
