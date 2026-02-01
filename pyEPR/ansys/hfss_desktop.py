@@ -87,45 +87,46 @@ class HfssDesktop(COMWrapper):
         self._get_odesktop().CloseAllWindows()
 
     def project_count(self):
-        projs = self._get_odesktop().GetProjects()
-        if projs is None:
-            return 0
-        return len(list(projs))
+        return len(self._desktop_pyaedt.project_list)
+        # projs = self._get_odesktop().GetProjects()
+        # if projs is None:
+        #     return 0
+        # return len(list(projs))
 
     def get_active_project(self):
-        oproject = self._get_odesktop().GetActiveProject()
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
+        oproject = self._desktop_pyaedt.active_project()
+        return HfssProject(self, oproject)
 
     def get_projects(self):
         projs = self._get_odesktop().GetProjects()
         if projs is None:
             return []
-        return [HfssProject(self, p, pyaedt_desktop=self._desktop_pyaedt) for p in list(projs)]
+        return [HfssProject(self, p) for p in list(projs)]
 
     def get_project_names(self):
-        names = self._get_odesktop().GetProjectList()
-        if names is None:
-            return []
-        return list(names)
+        return self._desktop_pyaedt.project_list
+        # names = self._get_odesktop().GetProjectList()
+        # if names is None:
+        #     return []
+        # return list(names)
 
     def get_messages(self, project_name="", design_name="", level=0):
         return self._get_odesktop().GetMessages(project_name, design_name, level)
 
     def get_version(self):
-        if self._desktop_pyaedt and hasattr(self._desktop_pyaedt, "aedt_version_id"):
-            return self._desktop_pyaedt.aedt_version_id
-        return self._get_odesktop().GetVersion()
+        return self._desktop_pyaedt.aedt_version_id
 
     def new_project(self):
         oproject = self._get_odesktop().NewProject()
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
+        return HfssProject(self, oproject)
 
     def open_project(self, path):
         oproject = self._get_odesktop().OpenProject(str(path))
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
+        return HfssProject(self, oproject)
 
     def set_active_project(self, name):
-        self._get_odesktop().SetActiveProject(name)
+        # This automatically returns to the active project after setting it. 
+        self._desktop_pyaedt.active_project(name)
 
     @property
     def project_directory(self):

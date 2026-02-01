@@ -7,10 +7,10 @@ from pyEPR.ansys.hfss_design import HfssDesign
 
 class HfssProject(COMWrapper):
     """Project wrapper for pyaedt backend."""
-    def __init__(self, desktop, project, pyaedt_desktop=None):
+    def __init__(self, desktop, project):
         super(HfssProject, self).__init__()
         self.parent = desktop
-        self._pyaedt_desktop = pyaedt_desktop
+        self._pyaedt_desktop = getattr(desktop, "_desktop_pyaedt", None)
         if project is not None:
             oproj = _unwrap_aedt_handle(project, "oproject")
             self._project = oproj if oproj is not None else project
