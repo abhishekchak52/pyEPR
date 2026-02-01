@@ -2,12 +2,14 @@
 
 from pathlib import Path
 
+from sympy.parsing import sympy_parser
+
 from ansys.aedt.core import Hfss as PyAEDTHfss
 from ansys.aedt.core import Q3d as PyAEDTQ3d
 
 from pyEPR import logger
 from pyEPR.ansys._reporter import _ReporterWrapper
-from pyEPR.ansys._units import increment_name
+from pyEPR.ansys._units import Q, VariableString, increment_name
 from pyEPR.ansys._wrapper import _unwrap_aedt_handle, COMWrapper
 from pyEPR.ansys.hfss_fields_calc import HfssFieldsCalc
 from pyEPR.ansys.hfss_modeler import HfssModeler
@@ -314,12 +316,150 @@ class HfssDesign(COMWrapper):
         if name in self.get_setup_names():
             self._setup_module.DeleteSetups(name)
 
+    def delete_full_variation(self, DesignVariationKey="All", del_linked_data=False):
+        """Delete solution data for variation(s). COM DeleteFullVariation."""
+        self._get_odesign().DeleteFullVariation(DesignVariationKey, del_linked_data)
+
     def get_variable_names(self):
+        """Returns the local design variables (and post-processing variables).
+        Does not return the project (global) variables, which start with $."""
         try:
             vars_ = self._design.GetVariables()
-            return list(vars_) if vars_ is not None else []
+            vars_ = list(vars_) if vars_ is not None else []
         except Exception:
-            return []
+            vars_ = []
+        try:
+            pp = self._design.GetPostProcessingVariables()
+            vars_ = vars_ + (list(pp) if pp is not None else [])
+        except Exception:
+            pass
+        return [VariableString(s) for s in vars_]
+
+    def create_variable(self, name, value, postprocessing=False):
+        variableprop = "PostProcessingVariableProp" if postprocessing else "VariableProp"
+        self._design.ChangeProperty(
+            [
+                "NAME:AllTabs",
+                [
+                    "NAME:LocalVariableTab",
+                    ["NAME:PropServers", "LocalVariables"],
+                    [
+                        "Name:NewProps",
+                        [
+                            "NAME:" + name,
+                            "PropType:=",
+                            variableprop,
+                            "UserDef:=",
+                            True,
+                            "Value:=",
+                            value,
+                        ],
+                    ],
+                ],
+            ]
+        )
+
+    def _variation_string_to_variable_list(self, variation_string: str, for_prop_server=True):
+        """Parse variation string (e.g. \"Cj='2fF' Lj='13.5nH'\") into local/project prop lists or raw pairs."""
+        s = variation_string.strip().split()
+        s = [s1.strip().strip("'\"").split("='") for s1 in s]
+        if not for_prop_server:
+            return s
+        local, project = [], []
+        for arr in s:
+            if len(arr) != 2:
+                continue
+            to_add = [f"NAME:{arr[0]}", "Value:=", arr[1].strip("'\"")]
+            if arr[0].startswith("$"):
+                project.append(to_add)
+            else:
+                local.append(to_add)
+        return local, project
+
+    def set_variables(self, variation_string: str):
+        """Set all variables to match a solved variation string (e.g. \"Cj='2fF' Lj='13.5nH'\")."""
+        assert isinstance(variation_string, str)
+        content = ["NAME:ChangedProps"]
+        local, project = self._variation_string_to_variable_list(variation_string)
+        if len(project) > 0:
+            self._design.ChangeProperty(
+                [
+                    "NAME:AllTabs",
+                    [
+                        "NAME:ProjectVariableTab",
+                        ["NAME:PropServers", "ProjectVariables"],
+                        content + project,
+                    ],
+                ]
+            )
+        if len(local) > 0:
+            self._design.ChangeProperty(
+                [
+                    "NAME:AllTabs",
+                    [
+                        "NAME:LocalVariableTab",
+                        ["NAME:PropServers", "LocalVariables"],
+                        content + local,
+                    ],
+                ]
+            )
+
+    def set_variable(self, name: str, value: str, postprocessing=False):
+        """Set one variable (create if missing). Case sensitive. Returns VariableString(name)."""
+        if name not in self.get_variable_names():
+            self.create_variable(name, value, postprocessing=postprocessing)
+        else:
+            self._design.SetVariableValue(name, value)
+        return VariableString(name)
+
+    def get_variable_value(self, name):
+        """Return value of a design variable (local only; not project variables starting with $)."""
+        return self._design.GetVariableValue(name)
+
+    def get_variables(self):
+        """Return dict of local (and post-processing) variable names to values."""
+        try:
+            local_variables = list(self._design.GetVariables())
+        except Exception:
+            local_variables = []
+        try:
+            pp = self._design.GetPostProcessingVariables()
+            local_variables = local_variables + (list(pp) if pp is not None else [])
+        except Exception:
+            pass
+        return {lv: self.get_variable_value(lv) for lv in local_variables}
+
+    def copy_design_variables(self, source_design):
+        """Copy all variable names/values from another design. Does not check that variables are all present."""
+        for name, value in source_design.get_variables().items():
+            self.set_variable(name, value)
+
+    def get_excitations(self):
+        return self._boundaries.GetExcitations()
+
+    def _evaluate_variable_expression(self, expr, units):
+        """Evaluate expression (may contain variable names) in given units; return float."""
+        try:
+            sexp = sympy_parser.parse_expr(str(expr))
+        except SyntaxError:
+            return Q(expr).to(units).magnitude
+        sub_exprs = {fs: self.get_variable_value(fs.name) for fs in sexp.free_symbols}
+        return float(
+            sexp.subs(
+                {
+                    fs: self._evaluate_variable_expression(e, units)
+                    for fs, e in sub_exprs.items()
+                }
+            )
+        )
+
+    def eval_expr(self, expr, units="mm"):
+        """Return expression evaluated in units as string (e.g. \"1.5mm\")."""
+        return str(self._evaluate_variable_expression(expr, units)) + units
+
+    def Clear_Field_Clac_Stack(self):
+        """Clear the fields reporter calc stack. Name kept as Clac for API compatibility."""
+        self._fields_calc.CalcStack("Clear")
 
     def get_nominal_variation(self):
         try:

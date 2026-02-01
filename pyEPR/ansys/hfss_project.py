@@ -10,16 +10,38 @@ class HfssProject(COMWrapper):
     def __init__(self, desktop, project):
         super(HfssProject, self).__init__()
         self.parent = desktop
-        self._pyaedt_desktop = getattr(desktop, "_desktop_pyaedt", None)
-        if project is not None:
-            oproj = _unwrap_aedt_handle(project, "oproject")
-            self._project = oproj if oproj is not None else project
-        else:
-            self._project = project
+        self._pyaedt_desktop = getattr(desktop, "_desktop_pyaedt")
+        self._project = project
         self._ansys_version = self.parent.version
 
-    def __bool__(self):
+    def _get_oproject(self):
+        # if self._project is None:
+        #     return None
+        # oproject = _unwrap_aedt_handle(self._project, "oproject")
+        # if oproject is not None and (hasattr(oproject, "InsertDesign") or hasattr(oproject, "GetDesigns")):
+        #     return oproject
+        # if hasattr(self._project, "InsertDesign") or hasattr(self._project, "GetDesigns"):
+        #     return self._project
+        return self._project
+
+    def __bool__(self) -> bool:
         return self._project is not None
+
+    @property
+    def name(self):
+        if self._project is None:
+            return None
+        return self._project.GetName()
+
+    def save(self, path=None):
+        self._pyaedt_desktop.save_project(project_name=self.name, project_path=path)
+        # oproject = self._get_oproject()
+        # if oproject is None:
+        #     raise EnvironmentError("No Project Available")
+        # if path is None:
+        #     oproject.Save()
+        # else:
+        #     oproject.SaveAs(str(path), True)
 
     def close(self):
         if self._project is not None:
@@ -32,35 +54,11 @@ class HfssProject(COMWrapper):
     def get_designs(self):
         return [
             HfssDesign(self, d, pyaedt_desktop=self._pyaedt_desktop)
-            for d in self._get_designs_list()
+            for d in self._project.GetDesigns()
         ]
 
     def get_design_names(self):
-        return [d.GetName() for d in self._get_designs_list()]
-
-    def _get_designs_list(self):
-        oproject = self._get_oproject()
-        if oproject is None:
-            return []
-        try:
-            designs = oproject.GetDesigns()
-        except Exception:
-            designs = None
-        if designs is None:
-            return []
-        try:
-            return list(designs)
-        except TypeError:
-            return [designs]
-
-    def save(self, path=None):
-        oproject = self._get_oproject()
-        if oproject is None:
-            raise EnvironmentError("No Project Available")
-        if path is None:
-            oproject.Save()
-        else:
-            oproject.SaveAs(str(path), True)
+        return self._pyaedt_desktop.design_list()
 
     def simulate_all(self):
         oproject = self._get_oproject()
@@ -142,22 +140,14 @@ class HfssProject(COMWrapper):
             return self._project.GetPath()
         raise Exception("Error: HFSS Project does not have a path.")
 
-    def new_design(self, design_name, solution_type, design_type="HFSS"):
+    def get_active_design(self):
         oproject = self._get_oproject()
-        existing_names = [d.GetName() for d in self._get_designs_list()]
-        design_name_int = increment_name(design_name, existing_names)
-        odesign = oproject.InsertDesign(design_type, design_name_int, solution_type, "")
-        return HfssDesign(self, odesign, pyaedt_desktop=self._pyaedt_desktop)
-
-    def _get_oproject(self):
-        if self._project is None:
-            return None
-        oproject = _unwrap_aedt_handle(self._project, "oproject")
-        if oproject is not None and (hasattr(oproject, "InsertDesign") or hasattr(oproject, "GetDesigns")):
-            return oproject
-        if hasattr(self._project, "InsertDesign") or hasattr(self._project, "GetDesigns"):
-            return self._project
-        return self._project
+        if oproject is None:
+            raise EnvironmentError("No Project Available")
+        active_odesign = oproject.GetActiveDesign()
+        if active_odesign is None:
+            raise EnvironmentError("No Design Active")
+        return HfssDesign(self, active_odesign, pyaedt_desktop=self._pyaedt_desktop)
 
     def get_design(self, name):
         oproject = self._get_oproject()
@@ -165,14 +155,12 @@ class HfssProject(COMWrapper):
             raise EnvironmentError("No Project Available")
         return HfssDesign(self, oproject.GetDesign(name), pyaedt_desktop=self._pyaedt_desktop)
 
-    def get_active_design(self):
+    def new_design(self, design_name, solution_type, design_type="HFSS"):
         oproject = self._get_oproject()
-        if oproject is None:
-            raise EnvironmentError("No Project Available")
-        d = oproject.GetActiveDesign()
-        if d is None:
-            raise EnvironmentError("No Design Active")
-        return HfssDesign(self, d, pyaedt_desktop=self._pyaedt_desktop)
+        existing_names = self._pyaedt_desktop.design_list()
+        design_name_int = increment_name(design_name, existing_names)
+        odesign = oproject.InsertDesign(design_type, design_name_int, solution_type, "")
+        return HfssDesign(self, odesign, pyaedt_desktop=self._pyaedt_desktop)
 
     def new_dm_design(self, name: str):
         return self.new_design(name, "DrivenModal")
@@ -183,8 +171,3 @@ class HfssProject(COMWrapper):
     def new_q3d_design(self, name: str):
         return self.new_design(name, "Q3D", "Q3D Extractor")
 
-    @property
-    def name(self):
-        if self._project is None:
-            return None
-        return self._project.GetName()
