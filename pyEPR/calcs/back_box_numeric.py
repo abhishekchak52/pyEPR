@@ -36,7 +36,7 @@ def _safe_inner_product(bra, ket):
         result = bra.dag() * ket
         # Extract scalar from 1x1 Qobj
         return complex(result.full()[0, 0])
-    except TypeError:
+    except (TypeError, AttributeError):
         # Sparse matrix index issue - use dense
         result = bra.dag().full() @ ket.full()
         return complex(result[0, 0])
@@ -48,7 +48,7 @@ def _safe_expectation(left, middle, right):
     """
     try:
         return (left.dag() * middle * right).data.toarray()[0, 0]
-    except TypeError:
+    except (TypeError, AttributeError):
         # Sparse matrix index issue - use dense
         result = left.dag().full() @ middle.full() @ right.full()
         return result[0, 0]
