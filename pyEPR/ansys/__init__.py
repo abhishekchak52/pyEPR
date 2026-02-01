@@ -58,8 +58,7 @@ else:
         release,
         set_property,
     )
-    from pyEPR.ansys.hfss_app import HfssApp
-    from pyEPR.ansys.hfss_desktop import HfssDesktop
+    from pyEPR.ansys.hfss_desktop import HfssApp, HfssDesktop
     from pyEPR.ansys.hfss_project import HfssProject
     from pyEPR.ansys.hfss_design import HfssDesign
     from pyEPR.ansys.hfss_setup import (

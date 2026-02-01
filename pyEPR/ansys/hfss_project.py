@@ -2,6 +2,7 @@
 
 from pyEPR.ansys._units import VariableString, increment_name
 from pyEPR.ansys._wrapper import _unwrap_aedt_handle, COMWrapper
+from pyEPR.ansys.hfss_design import HfssDesign
 
 
 class HfssProject(COMWrapper):
@@ -29,7 +30,6 @@ class HfssProject(COMWrapper):
             self.parent.set_active_project(self.name)
 
     def get_designs(self):
-        from .hfss_design import HfssDesign
         return [
             HfssDesign(self, d, pyaedt_desktop=self._pyaedt_desktop)
             for d in self._get_designs_list()
@@ -143,7 +143,6 @@ class HfssProject(COMWrapper):
         raise Exception("Error: HFSS Project does not have a path.")
 
     def new_design(self, design_name, solution_type, design_type="HFSS"):
-        from .hfss_design import HfssDesign
         oproject = self._get_oproject()
         existing_names = [d.GetName() for d in self._get_designs_list()]
         design_name_int = increment_name(design_name, existing_names)
@@ -161,14 +160,12 @@ class HfssProject(COMWrapper):
         return self._project
 
     def get_design(self, name):
-        from .hfss_design import HfssDesign
         oproject = self._get_oproject()
         if oproject is None:
             raise EnvironmentError("No Project Available")
         return HfssDesign(self, oproject.GetDesign(name), pyaedt_desktop=self._pyaedt_desktop)
 
     def get_active_design(self):
-        from .hfss_design import HfssDesign
         oproject = self._get_oproject()
         if oproject is None:
             raise EnvironmentError("No Project Available")

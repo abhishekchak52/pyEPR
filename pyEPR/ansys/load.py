@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pyEPR import logger
 from pyEPR.ansys._backend import get_backend
-from pyEPR.ansys.hfss_app import HfssApp
+from pyEPR.ansys.hfss_desktop import HfssApp
 from pyEPR.ansys.hfss_report import HfssReport
 
 

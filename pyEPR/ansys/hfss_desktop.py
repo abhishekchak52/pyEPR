@@ -1,7 +1,57 @@
-"""HfssDesktop for pyaedt backend."""
+"""HfssApp and HfssDesktop for pyaedt backend."""
 
-from pyEPR.ansys._wrapper import COMWrapper, _unwrap_aedt_handle
+import os
+
+from ansys.aedt.core import Desktop as PyAEDTDesktop
+
+from pyEPR import logger
+from pyEPR.ansys._wrapper import (
+    COMWrapper,
+    _pyaedt_sessions,
+    _unwrap_aedt_handle,
+)
 from pyEPR.ansys.hfss_project import HfssProject
+
+
+class HfssApp(COMWrapper):
+    """Connect to Ansys AEDT via pyaedt (gRPC)."""
+
+    def __init__(
+        self,
+        ProgID="AnsoftHfss.HfssScriptInterface",
+        version=None,
+        non_graphical=None,
+        new_desktop=None,
+    ):
+        super(HfssApp, self).__init__()
+        self._pyaedt_desktop = None
+        self._app = None
+        non_graphical = (
+            os.getenv("PYAEDT_NON_GRAPHICAL", False)
+            if non_graphical is None
+            else non_graphical
+        )
+        self._pyaedt_desktop = PyAEDTDesktop(
+            version=version,
+            non_graphical=non_graphical,
+            new_desktop=new_desktop,
+            close_on_exit=True,
+        )
+        _pyaedt_sessions.append(self._pyaedt_desktop)
+        self._app = self._pyaedt_desktop
+        logger.info("Connected to Ansys via pyaedt backend")
+
+    def get_app_desktop(self):
+        return HfssDesktop(self, self._pyaedt_desktop)
+
+    def release(self):
+        super().release()
+        if self._pyaedt_desktop is not None:
+            try:
+                self._pyaedt_desktop.release_desktop()
+            except Exception:
+                pass
+            self._pyaedt_desktop = None
 
 
 class HfssDesktop(COMWrapper):
@@ -9,7 +59,7 @@ class HfssDesktop(COMWrapper):
     def __init__(self, app, desktop):
         super(HfssDesktop, self).__init__()
         self.parent = app
-        self._desktop_original = desktop
+        self._desktop_pyaedt = desktop
         self.version = self.get_version()
 
     def __bool__(self):
@@ -19,7 +69,7 @@ class HfssDesktop(COMWrapper):
             return False
 
     def _get_odesktop(self):
-        desktop_obj = self._desktop_original
+        desktop_obj = self._desktop_pyaedt
         odesk = _unwrap_aedt_handle(desktop_obj, "odesktop")
         if odesk is not None:
             return odesk
@@ -44,13 +94,13 @@ class HfssDesktop(COMWrapper):
 
     def get_active_project(self):
         oproject = self._get_odesktop().GetActiveProject()
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_original)
+        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
 
     def get_projects(self):
         projs = self._get_odesktop().GetProjects()
         if projs is None:
             return []
-        return [HfssProject(self, p, pyaedt_desktop=self._desktop_original) for p in list(projs)]
+        return [HfssProject(self, p, pyaedt_desktop=self._desktop_pyaedt) for p in list(projs)]
 
     def get_project_names(self):
         names = self._get_odesktop().GetProjectList()
@@ -62,17 +112,17 @@ class HfssDesktop(COMWrapper):
         return self._get_odesktop().GetMessages(project_name, design_name, level)
 
     def get_version(self):
-        if self._desktop_original and hasattr(self._desktop_original, "aedt_version_id"):
-            return self._desktop_original.aedt_version_id
+        if self._desktop_pyaedt and hasattr(self._desktop_pyaedt, "aedt_version_id"):
+            return self._desktop_pyaedt.aedt_version_id
         return self._get_odesktop().GetVersion()
 
     def new_project(self):
         oproject = self._get_odesktop().NewProject()
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_original)
+        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
 
     def open_project(self, path):
         oproject = self._get_odesktop().OpenProject(str(path))
-        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_original)
+        return HfssProject(self, oproject, pyaedt_desktop=self._desktop_pyaedt)
 
     def set_active_project(self, name):
         self._get_odesktop().SetActiveProject(name)
