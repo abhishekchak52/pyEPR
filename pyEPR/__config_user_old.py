@@ -10,11 +10,12 @@ Do not edit `_config_default.py` directly. Rather, overwrite attributes here
 """
 
 from . import Dict
+from pathlib import Path
 
 config = Dict(
     # Folder to save result data to.
     # PLEASE CHANGE THIS
-    root_dir=r"C:\data-pyEPR",
+    root_dir=Path.cwd() / "data-pyEPR", # Use the current working directory to save the data
     # Loss properties of various materials and surfaces
     dissipation=Dict(
         ##################################################

@@ -16,11 +16,12 @@ GIT: Do not track changes here.
 """
 
 from . import Dict
+from pathlib import Path
 
 config = Dict(  # pylint: disable=invalid-name
     # Folder to save result data to.
     # PLEASE CHANGE THIS
-    root_dir=r"C:\data-pyEPR",  # Not all machines have a D drive so substituting D with C here
+    root_dir=Path.cwd() / "data-pyEPR", # Use the current working directory to save the data
     # Loss properties of various materials and surfaces
     dissipation=Dict(
         ##################################################

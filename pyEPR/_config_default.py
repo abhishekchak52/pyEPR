@@ -13,6 +13,8 @@ in a dictionary called CONFIG in a file called config.py
 
 import collections.abc
 from . import Dict
+from pathlib import Path
+
 
 # If we are reloading the package, then config will already be defined, then do not overwrite it.
 __config_defined__ = "config" in locals()
@@ -20,7 +22,7 @@ __config_defined__ = "config" in locals()
 
 config = Dict(  # pylint: disable=invalid-name
     # Folder to save result data to.
-    root_dir=r"C:\data-pyEPR",
+    root_dir=Path.cwd() / "data-pyEPR",
     save_format=r"%Y-%m-%d %H-%M-%S",
     ansys=Dict(
         # method_calc_P_mj sets the method used to calculate the participation ratio in eigenmode.
